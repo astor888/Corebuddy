@@ -1,0 +1,77 @@
+{
+  "name": "corebuddy",
+  "version": "1.4.1",
+  "description": "Your private AI secretary. Runs locally, data never leaves your machine.",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && npx electron .\"",
+    "build": "vite build",
+    "start": "npm run build && npx electron .",
+    "dist": "npm run build && npx electron-builder --win"
+  },
+  "build": {
+    "appId": "com.jt.corebuddy",
+    "productName": "CoreBuddy",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "test-mcp-server.js",
+        "to": "test-mcp-server.js"
+      },
+      {
+        "from": "github-mcp-server.js",
+        "to": "github-mcp-server.js"
+      },
+      {
+        "from": "feishu-mcp-server.js",
+        "to": "feishu-mcp-server.js"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "docx": "^8.5.0",
+    "highlight.js": "^11.11.1",
+    "mermaid": "^11.15.0",
+    "pdf-parse": "^2.4.5",
+    "pptxgenjs": "^3.12.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "rehype-raw": "^7.0.0",
+    "remark-gfm": "^4.0.1",
+    "sharp": "^0.35.1",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.2",
+    "electron": "^33.2.1",
+    "electron-builder": "^26.15.2",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vite-plugin-electron": "^0.28.8",
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "wait-on": "^8.0.3"
+  }
+}

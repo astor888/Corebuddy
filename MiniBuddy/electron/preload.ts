@@ -1,0 +1,109 @@
+import { contextBridge, ipcRenderer } from 'electron'
+
+contextBridge.exposeInMainWorld('electronAPI', {
+  window: {
+    minimize: () => ipcRenderer.invoke('window:minimize'),
+    maximize: () => ipcRenderer.invoke('window:maximize'),
+    close: () => ipcRenderer.invoke('window:close'),
+    isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  },
+  config: {
+    get: (key: string) => ipcRenderer.invoke('config:get', key),
+    set: (key: string, value: string) => ipcRenderer.invoke('config:set', key, value),
+  },
+  conv: {
+    list: () => ipcRenderer.invoke('conv:list'),
+    create: (id: string) => ipcRenderer.invoke('conv:create', id),
+    delete: (id: string) => ipcRenderer.invoke('conv:delete', id),
+    messages: (id: string) => ipcRenderer.invoke('conv:messages', id),
+    status: () => ipcRenderer.invoke('conv:status'),
+    onStatusChange: (cb: (data: { convId: string; loading: boolean }) => void) => {
+      const h = (_: any, d: any) => cb(d)
+      ipcRenderer.on('conv:status', h)
+      return () => ipcRenderer.removeListener('conv:status', h)
+    },
+  },
+  chat: {
+    sendMessage: (text: string, modelId: string, convId: string, permLevel?: number, persona?: string, scenePrompt?: string, userName?: string) =>
+      ipcRenderer.invoke('chat:sendMessage', text, modelId, convId, permLevel, persona, scenePrompt, userName),
+    abort: (convId: string) => ipcRenderer.invoke('chat:abort', convId),
+    feedback: (convId: string, msgId: string, type: 'like' | 'dislike', content: string) =>
+      ipcRenderer.invoke('chat:feedback', convId, msgId, type, content),
+    onStreamChunk: (cb: (chunk: string) => void) => {
+      const h = (_: any, c: string) => cb(c)
+      ipcRenderer.on('chat:streamChunk', h)
+      return () => ipcRenderer.removeListener('chat:streamChunk', h)
+    },
+    onStreamDone: (cb: (data?: any) => void) => {
+      const h = (_: any, d: any) => cb(d)
+      ipcRenderer.on('chat:streamDone', h)
+      return () => ipcRenderer.removeListener('chat:streamDone', h)
+    },
+    onStreamError: (cb: (err: string) => void) => {
+      const h = (_: any, e: string) => cb(e)
+      ipcRenderer.on('chat:streamError', h)
+      return () => ipcRenderer.removeListener('chat:streamError', h)
+    },
+    onArtifact: (cb: (artifact: { tool: string; path: string; type: string; time: string; convId: string }) => void) => {
+      const h = (_: any, a: any) => cb(a)
+      ipcRenderer.on('chat:artifact', h)
+      return () => ipcRenderer.removeListener('chat:artifact', h)
+    },
+    onToolStart: (cb: (data: { count: number; names: string[] }) => void) => {
+      const h = (_: any, d: any) => cb(d)
+      ipcRenderer.on('chat:toolStart', h)
+      return () => ipcRenderer.removeListener('chat:toolStart', h)
+    },
+    onToolProgress: (cb: (data: { completed: number; total: number }) => void) => {
+      const h = (_: any, d: any) => cb(d)
+      ipcRenderer.on('chat:toolProgress', h)
+      return () => ipcRenderer.removeListener('chat:toolProgress', h)
+    },
+    onToolAction: (cb: (data: { action: string; completed: number; total: number }) => void) => {
+      const h = (_: any, d: any) => cb(d)
+      ipcRenderer.on('chat:toolAction', h)
+      return () => ipcRenderer.removeListener('chat:toolAction', h)
+    },
+  },
+  progress: {
+    get: () => ipcRenderer.invoke('progress:get'),
+  },
+  mcp: {
+    list: () => ipcRenderer.invoke('mcp:list'),
+    connect: () => ipcRenderer.invoke('mcp:connect'),
+    connectOne: (name: string, config: any) => ipcRenderer.invoke('mcp:connectOne', name, config),
+    disconnect: (name: string) => ipcRenderer.invoke('mcp:disconnect', name),
+    reconnect: (name: string) => ipcRenderer.invoke('mcp:reconnect', name),
+    save: (name: string, config: any) => ipcRenderer.invoke('mcp:save', name, config),
+    remove: (name: string) => ipcRenderer.invoke('mcp:remove', name),
+    status: () => ipcRenderer.invoke('mcp:status'),
+    tools: (name: string) => ipcRenderer.invoke('mcp:tools', name),
+    exportConfig: () => ipcRenderer.invoke('mcp:export'),
+    importConfig: () => ipcRenderer.invoke('mcp:import'),
+  },
+  memory: {
+    savePreset: (preset: any) => ipcRenderer.invoke('memory:savePreset', preset),
+  },
+  models: {
+    list: () => ipcRenderer.invoke('models:list'),
+    save: (config: any) => ipcRenderer.invoke('models:save', config),
+    add: (model: any) => ipcRenderer.invoke('models:add', model),
+    remove: (id: string) => ipcRenderer.invoke('models:remove', id),
+    setDefault: (id: string) => ipcRenderer.invoke('models:setDefault', id),
+  },
+  skills: {
+    list: () => ipcRenderer.invoke('skills:list'),
+  },
+  oauth: {
+    start: (service: string, config: any) => ipcRenderer.invoke('oauth:start', service, config),
+    port: () => ipcRenderer.invoke('oauth:port'),
+  },
+  file: {
+    open: (filePath: string) => ipcRenderer.invoke('file:open', filePath),
+    showInFolder: (filePath: string) => ipcRenderer.invoke('file:showInFolder', filePath),
+    read: (filePath: string) => ipcRenderer.invoke('file:read', filePath),
+    listOutputs: () => ipcRenderer.invoke('file:listOutputs'),
+    getInfo: (filePath: string) => ipcRenderer.invoke('file:getInfo', filePath),
+  },
+  openExternal: (url: string) => ipcRenderer.invoke('openExternal', url),
+})

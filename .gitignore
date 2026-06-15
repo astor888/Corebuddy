@@ -1,7 +1,13 @@
 # WorkBuddy session workspace
 .workbuddy/memory/
+
+# Node.js
 node_modules/
 dist/
-build/
-.env
+dist-electron/
+release/
+runtime/
 *.log
+
+# Environment
+.env
