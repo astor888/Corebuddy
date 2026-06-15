@@ -1,0 +1,7 @@
+# WorkBuddy session workspace
+.workbuddy/memory/
+node_modules/
+dist/
+build/
+.env
+*.log
