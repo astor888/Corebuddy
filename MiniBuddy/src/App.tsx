@@ -53,6 +53,9 @@ interface AppState {
   autoConfig: { defaultModel: string; imageModel: string }
 }
 
+// ====== App Version ======
+const APP_VERSION = '1.9.6'
+
 // ====== Scene Data (可后台自定义，当前为模拟数据) ======
 const sceneData: SceneItem[] = [
   { id: 'ppt', name: '幻灯片', icon: 'doc', color: '#F53F3F', desc: '生成演示文稿', keywords: ['pptx', 'ppt', '幻灯片', '演示文稿', 'slide', 'slides', '汇报ppt', '提案ppt', '路演', '演讲', 'keynote'],
@@ -1293,6 +1296,13 @@ export function App() {
               <span className="text-[#C9CDD4]">优化 token</span>
             </div>
           )}
+
+          {/* Version indicator */}
+          <div className="flex items-center justify-end px-5 py-0.5 text-[10px] text-[#C9CDD4] select-none shrink-0 bg-white border-t border-[#F2F3F5]">
+            <span>v{APP_VERSION}</span>
+            <span className="mx-1">·</span>
+            <span className="font-mono">CoreBuddy</span>
+          </div>
 
           {/* Input Area */}
           <div className="px-5 py-3 border-t border-[#F2F3F5] bg-white shrink-0">

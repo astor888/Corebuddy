@@ -38,6 +38,19 @@ export function getActiveSkillsPrompt(userMessage: string): string {
     .join('\n\n')
 }
 
+/** Get skills prompt filtered by specific skill tags (for Pipeline Agent roles) */
+export function getActiveSkillsPromptForAgent(roleName: string, allowedTags: string[]): string {
+  if (loadedSkills.length === 0 || allowedTags.length === 0) return ''
+  const active = loadedSkills.filter(s => {
+    if (!s.triggers) return false
+    return s.triggers.some(t => allowedTags.includes(t.toLowerCase()) || roleName.includes(t.toLowerCase()))
+  })
+  if (active.length === 0) return ''
+  return active
+    .map(s => `## Skill: ${s.name}\n${s.prompt || s.description}`)
+    .join('\n\n')
+}
+
 /** Get all loaded skill declarations */
 export function getLoadedSkills(): SkillDeclaration[] {
   return [...loadedSkills]

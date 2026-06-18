@@ -10,6 +10,8 @@ import { addMessage, getContext } from './context'
 import { recordDailyLog, updateProfile, addTodo } from './memory'
 import { runPreToolHooks, runPostToolHooks, runStopHooks } from './hooks'
 import { getActiveSkillsPrompt } from './plugins'
+import { shouldUsePipeline, matchPipeline, runPipeline } from './pipeline'
+import type { PipelineRun } from './pipeline'
 
 export interface AgentMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -88,6 +90,44 @@ export async function agentLoop(
 
   // 1. Record user message
   addMessage(convId, { role: 'user', content: userMessage })
+
+  // ★ Pipeline detection: 如果是多步骤复杂任务，启动 Pipeline 编排引擎 ★
+  if (shouldUsePipeline(userMessage, cfg.executionMode || 'craft')) {
+    const pipelineDef = matchPipeline(userMessage)
+    if (pipelineDef) {
+      send('chat:streamChunk', `\n> 🔍 检测到复杂任务，启动 **${pipelineDef.name}** 多 Agent 协同工作流\n`)
+
+      const pipelineResult = await runPipeline(pipelineDef, userMessage, {
+        apiKey: cfg.apiKey,
+        model: cfg.model,
+        apiUrl: cfg.apiUrl,
+        persona: cfg.persona,
+        send: (channel, data) => send(channel, data),
+        convId,
+        onPipelineComplete: (result: PipelineRun) => {
+          // 把 Pipeline 最终输出作为 assistant 消息记录
+          const finalOutput = result.context['_finalOutput'] || ''
+          if (finalOutput) {
+            addMessage(convId, { role: 'assistant', content: finalOutput })
+          }
+          recordDailyLog(convId, userMessage, `(pipeline: ${pipelineDef.id})`)
+        },
+        onPipelineError: (error: string) => {
+          recordDailyLog(convId, userMessage, `(pipeline error: ${error})`)
+        },
+      })
+
+      // 如果 Pipeline 成功完成，记录完成状态
+      if (pipelineResult.status === 'completed') {
+        send('chat:streamDone', { toolCount: pipelineResult.stages.size, artifactCount: 0, pipeline: true })
+        runStopHooks(convId)
+        return
+      }
+
+      // 如果 Pipeline 失败了，继续退回到普通的 Agent Loop 兜底
+      send('chat:streamChunk', `\n> ⚠️ Pipeline 执行遇到问题，退回单 Agent 模式继续处理...\n`)
+    }
+  }
 
   // 2. Build system prompt + inject activated skills
   let systemPrompt: string
