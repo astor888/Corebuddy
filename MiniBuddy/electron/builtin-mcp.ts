@@ -30,7 +30,7 @@ export function getTestMcpTools(): McpTool[] {
         try {
           const val = Function(`"use strict"; return (${args.expr || '0'})`)()
           return `结果: ${args.expr} = ${val}`
-        } catch (e: any) { return `计算错误: ${e.message}` }
+        } catch (e: unknown) { const msg = e instanceof Error ? e.message : String(e); return `计算错误: ${msg}` }
       },
     },
     {
@@ -125,7 +125,7 @@ export function getFeishuMcpTools(env: Record<string, string> = {}): McpTool[] {
             }
           }
           headers['Authorization'] = `Bearer ${tenantToken}`
-        } catch (e: any) { return resolve(`飞书认证异常: ${e.message}`) }
+        } catch (e: unknown) { const msg = e instanceof Error ? e.message : String(e); return resolve(`飞书认证异常: ${msg}`) }
       }
       const req = https.request({ hostname: 'open.feishu.cn', path, method, headers }, res => {
         let d = ''

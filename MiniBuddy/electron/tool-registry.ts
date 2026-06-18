@@ -6,12 +6,12 @@ import fs from 'fs'
 import os from 'os'
 import { execSync } from 'child_process'
 import { app, shell } from 'electron'
-import { addFact, updateProject, addTodo, loadMemory } from './memory'
+import { addTodo, markTodoDone, loadMemory, updateProfile, getProfileText, resetProfile } from './memory'
 import { spawnSubAgent } from './sub-agent'
 
 // Store current API config for sub-agent spawning
-let currentApiConfig: { apiKey: string; model: string } | null = null
-export function setApiConfig(config: { apiKey: string; model: string }) {
+let currentApiConfig: { apiKey: string; model: string; apiUrl?: string } | null = null
+export function setApiConfig(config: { apiKey: string; model: string; apiUrl?: string }) {
   currentApiConfig = config
 }
 
@@ -38,6 +38,7 @@ export interface Tool {
   execute: (params: any) => Promise<string> | string
   // Mark as parallel-safe (concurrent execution OK)
   parallelSafe?: boolean
+  domains?: string[]    // 所属领域：'office' | 'code' | 'creative'（留空表示 all）
 }
 
 // Claude Code Permission Modes
@@ -57,10 +58,47 @@ export function getAllTools(): Tool[] {
   return Object.values(tools)
 }
 
-export function getToolsPrompt(): string {
-  return getAllTools()
+export function getToolsPrompt(domain?: string): string {
+  const filtered = domain ? getAllTools().filter(t => !t.domains || t.domains.includes(domain)) : getAllTools()
+  return filtered
     .map(t => `- **${t.name}** (L${t.permission}${t.parallelSafe ? ', 可并行' : ''}): ${t.description}\n  Params: ${Object.entries(t.parameters).map(([k, v]) => `${k}(${v})`).join(', ')}`)
     .join('\n')
+}
+
+/**
+ * Convert CoreBuddy Tool definitions to OpenAI-compatible function calling format.
+ * Used when the API supports native function calling (DeepSeek V4, OpenAI, etc.)
+ */
+export function getOpenAITools(domain?: string): Array<{
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: {
+      type: 'object'
+      properties: Record<string, { type: string; description: string }>
+      required: string[]
+    }
+  }
+}> {
+  const filtered = domain ? getAllTools().filter(t => !t.domains || t.domains.includes(domain)) : getAllTools()
+  return filtered.map(t => ({
+    type: 'function' as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: {
+        type: 'object' as const,
+        properties: Object.fromEntries(
+          Object.entries(t.parameters).map(([key, desc]) => [
+            key,
+            { type: 'string', description: desc },
+          ])
+        ),
+        required: Object.keys(t.parameters),
+      },
+    },
+  }))
 }
 
 /** Check if a tool can be executed at the given permission level */
@@ -81,6 +119,7 @@ registerTool({
   parameters: { path: '目录路径（绝对路径）' },
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const p = params.path || '.'
@@ -88,8 +127,9 @@ registerTool({
       const items = fs.readdirSync(p, { withFileTypes: true }).slice(0, 50)
       if (items.length === 0) return `目录为空: ${p}`
       return items.map(i => `${i.isDirectory() ? '[目录]' : '[文件]'} ${i.name}${i.isDirectory() ? '/' : ''}`).join('\n')
-    } catch (e: any) {
-      return `列出目录失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `列出目录失败: ${msg}`
     }
   },
 })
@@ -100,6 +140,7 @@ registerTool({
   parameters: { path: '文件路径（绝对路径）' },
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       if (!fs.existsSync(params.path)) return `文件不存在: ${params.path}`
@@ -107,8 +148,9 @@ registerTool({
       if (stat.isDirectory()) return `路径是目录而非文件: ${params.path}`
       const c = fs.readFileSync(params.path, 'utf-8')
       return c.slice(0, 4000) + (c.length > 4000 ? `\n...(截断，共 ${c.length} 字符)` : '')
-    } catch (e: any) {
-      return `读取文件失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `读取文件失败: ${msg}`
     }
   },
 })
@@ -118,14 +160,16 @@ registerTool({
   description: '创建或覆盖文件。相对路径默认保存到 CoreBuddy 输出目录。',
   parameters: { path: '文件路径', content: '要写入的内容' },
   permission: 2,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const filePath = resolveWorkPath(params.path)
       fs.mkdirSync(path.dirname(filePath), { recursive: true })
       fs.writeFileSync(filePath, params.content || '', 'utf-8')
       return `已写入: ${filePath}`
-    } catch (e: any) {
-      return `写入文件失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `写入文件失败: ${msg}`
     }
   },
 })
@@ -135,12 +179,15 @@ registerTool({
   description: '执行命令行。谨慎使用。',
   parameters: { command: '要执行的命令' },
   permission: 3,
+  domains: ['code'],
   execute(params) {
     try {
       const r = execSync(params.command, { encoding: 'utf-8', timeout: 30000, windowsHide: true, maxBuffer: 1024 * 1024 })
       return r || '(执行成功)'
-    } catch (e: any) {
-      return `命令执行失败: ${e.message}\n${e.stderr || ''}`.slice(0, 1000)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      const stderr = e instanceof Error ? (e as any).stderr || '' : ''
+      return `命令执行失败: ${msg}\n${stderr}`.slice(0, 1000)
     }
   },
 })
@@ -150,12 +197,14 @@ registerTool({
   description: '在默认浏览器中打开网址',
   parameters: { url: '网址' },
   permission: 3,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       shell.openExternal(params.url)
       return `已打开: ${params.url}`
-    } catch (e: any) {
-      return `打开网址失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `打开网址失败: ${msg}`
     }
   },
 })
@@ -165,6 +214,7 @@ registerTool({
   description: '在百度上搜索并返回结果摘要（后台执行，不打开浏览器）',
   parameters: { query: '搜索关键词' },
   permission: 3,
+  domains: ['office', 'code', 'creative'],
   async execute(params) {
     try {
       const query = params.query || ''
@@ -195,92 +245,76 @@ registerTool({
         .slice(5, 15) // Skip header noise, take 10 results
       
       return `## 搜索: ${query}\n${lines.map((l, i) => `${i + 1}. ${l}`).join('\n')}\n(百度搜索结果摘要)`
-    } catch (e: any) {
-      return `搜索失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `搜索失败: ${msg}`
     }
   },
 })
 
 registerTool({
-  name: 'update_memory',
-  description: '记住一个事实、偏好、项目更新或待办事项',
-  parameters: { type: 'fact|project|todo|preference', content: '要记忆的内容' },
-  permission: 2,
-  execute(params) {
-    try {
-      switch (params.type) {
-        case 'fact':
-          addFact(params.content)
-          return `已记住事实: ${params.content}`
-        case 'project': {
-          const parts = params.content.split(':')
-          updateProject(parts[0]?.trim() || '', parts.slice(1).join(':').trim() || '')
-          return `已更新项目状态`
-        }
-        case 'todo':
-          addTodo(params.content)
-          return `已添加待办: ${params.content}`
-        case 'preference':
-          addFact(params.content)
-          return `已记录偏好: ${params.content}`
-        default:
-          addFact(params.content)
-          return `已记住: ${params.content}`
-      }
-    } catch (e: any) {
-      return `记忆更新失败: ${e.message}`
-    }
-  },
-})
-
-registerTool({
-  name: 'remember',
-  description: '记住用户说过的重要信息（快捷方式，相当于 update_memory type=fact）',
-  parameters: { text: '要记住的内容' },
-  permission: 2,
-  execute(params) {
-    try {
-      addFact(params.text)
-      return `已记住`
-    } catch (e: any) {
-      return `记忆保存失败: ${e.message}`
-    }
-  },
-})
-
-registerTool({
-  name: 'recall_memory',
-  description: '查看存储的用户记忆（facts/preferences/projects/todos）和最近的对话标题',
-  parameters: { category: 'all|facts|preferences|projects|todos|conversations' },
+  name: 'read_profile',
+  description: '读取当前用户档案（工作背景、个人偏好、当前关注、近期动态）。每次对话开始时调用一次，了解用户上下文。',
+  parameters: {},
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
+  execute() {
+    try {
+      return getProfileText()
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `读取档案失败: ${msg}`
+    }
+  },
+})
+
+registerTool({
+  name: 'update_profile',
+  description: '更新用户档案。只更新有变化的部分，没变化的部分不用传。每次对话结束前调用一次，整理本对话学到的新信息。',
+  parameters: {
+    workBackground: '工作背景（做什么的、用什么工具、项目是什么）',
+    personalBackground: '个人背景（工作习惯、偏好、沟通风格）',
+    currentFocus: '当前关注（正在做什么、接下来要做什么）',
+    recentActivities: 'JSON 数组，近期动态列表，如 ["修复了 PDF 解析", "重构了记忆系统"]',
+  },
+  permission: 2,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
-      const mem = loadMemory()
-      const cat = params.category || 'all'
-      if (cat === 'facts') return `## 事实\n${mem.facts.map(f => `- ${f}`).join('\n')}`
-      if (cat === 'preferences') return `## 偏好\n${mem.preferences.map(p => `- ${p}`).join('\n')}`
-      if (cat === 'projects') return `## 项目\n${mem.projects.map(p => `- ${p.name}: ${p.status}`).join('\n')}`
-      if (cat === 'todos') {
-        const active = mem.todos.filter(t => !t.done)
-        return `## 待办\n${active.length ? active.map(t => `- ${t.text}`).join('\n') : '(无待办)'}`
+      const updates: any = {}
+      if (params.workBackground !== undefined) updates.workBackground = params.workBackground
+      if (params.personalBackground !== undefined) updates.personalBackground = params.personalBackground
+      if (params.currentFocus !== undefined) updates.currentFocus = params.currentFocus
+      if (params.recentActivities !== undefined) {
+        try { updates.recentActivities = JSON.parse(params.recentActivities) } catch { updates.recentActivities = [params.recentActivities] }
       }
-      if (cat === 'conversations') {
-        // Read recent conversation titles
-        const convsPath = path.join(app.getPath('userData'), 'corebuddy-data', 'conversations.json')
-        let convs: any[] = []
-        try { convs = JSON.parse(fs.readFileSync(convsPath, 'utf-8')) } catch {}
-        const recent = convs.sort((a: any, b: any) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, 10)
-        return `## 最近对话\n${recent.map((c: any) => `- ${c.title} (${c.updatedAt?.slice(0, 10) || '未知'})`).join('\n')}`
+      updateProfile(updates)
+      return `档案已更新`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `档案更新失败: ${msg}`
+    }
+  },
+})
+
+// ── reset_profile — 清空记忆 ──
+registerTool({
+  name: 'reset_profile',
+  description: '清空所有用户档案和待办事项，恢复到初始状态。高风险操作！执行前必须请用户确认。',
+  parameters: { confirm: '确认操作。必须设置为 true 才会执行' },
+  permission: 3,
+  domains: ['office', 'code', 'creative'],
+  execute(params) {
+    try {
+      if (params.confirm !== true && params.confirm !== 'true') {
+        return '⚠️ 此操作将清空所有记忆，无法恢复。如需继续，请设置 confirm=true'
       }
-      // All — include conversations
-      const convsPath = path.join(app.getPath('userData'), 'corebuddy-data', 'conversations.json')
-      let convs: any[] = []
-      try { convs = JSON.parse(fs.readFileSync(convsPath, 'utf-8')) } catch {}
-      const recent = convs.sort((a: any, b: any) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, 10)
-      return `## 记忆状态\n\n### 事实 (${mem.facts.length})\n${mem.facts.map(f => `- ${f}`).join('\n')}\n\n### 偏好 (${mem.preferences.length})\n${mem.preferences.map(p => `- ${p}`).join('\n')}\n\n### 项目 (${mem.projects.length})\n${mem.projects.map(p => `- ${p.name}: ${p.status}`).join('\n')}\n\n### 待办\n${mem.todos.filter(t => !t.done).map(t => `- ${t.text}`).join('\n') || '(无)'}\n\n### 最近对话\n${recent.map(c => `- ${c.title} (${c.updatedAt?.slice(0, 10) || '未知'})`).join('\n')}\n`
-    } catch (e: any) {
-      return `读取记忆失败: ${e.message}`
+      resetProfile()
+      return '已清空所有用户档案和待办事项'
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `清空失败: ${msg}`
     }
   },
 })
@@ -292,14 +326,16 @@ registerTool({
   description: '创建 Markdown 文档（.md 文件）',
   parameters: { path: '文件路径（如 /path/to/doc.md）', content: 'Markdown 内容' },
   permission: 2,
+  domains: ['office'],
   execute(params) {
     try {
       const filePath = resolveWorkPath(params.path)
       fs.mkdirSync(path.dirname(filePath), { recursive: true })
       fs.writeFileSync(filePath, params.content || '', 'utf-8')
       return `已创建 Markdown 文档: ${filePath} (${(params.content || '').length} 字符)`
-    } catch (e: any) {
-      return `创建 Markdown 失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `创建 Markdown 失败: ${msg}`
     }
   },
 })
@@ -309,6 +345,7 @@ registerTool({
   description: '创建 CSV 文件（可用 Excel 打开），data 为二维数组，headers 为表头数组',
   parameters: { path: '文件路径（如 /path/to/data.csv）', headers: '逗号分隔的表头，如：姓名,年龄,部门', data: 'JSON 格式的二维数组，如：[["张三","25","研发"],["李四","30","销售"]]' },
   permission: 2,
+  domains: ['office'],
   execute(params) {
     try {
       let csv = '\uFEFF' // BOM for Excel Chinese support
@@ -330,8 +367,9 @@ registerTool({
       fs.mkdirSync(path.dirname(filePath), { recursive: true })
       fs.writeFileSync(filePath, csv, 'utf-8')
       return `已创建 CSV 文件: ${filePath} (${rows.length} 行数据)`
-    } catch (e: any) {
-      return `创建 CSV 失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `创建 CSV 失败: ${msg}`
     }
   },
 })
@@ -345,6 +383,7 @@ registerTool({
     sections: 'JSON 数组：[{"type":"heading","content":"标题","level":1},{"type":"text","content":"段落"},{"type":"bullet","items":["项1","项2"]},{"type":"table","headers":["列1","列2"],"rows":[["a","b"]]}]'
   },
   permission: 2,
+  domains: ['office'],
   execute(params) {
     try {
       const docx = getDocx()
@@ -425,14 +464,17 @@ registerTool({
       })
 
       return Packer.toBuffer(doc).then((buffer: any) => {
-        fs.mkdirSync(path.dirname(params.path), { recursive: true })
         const filePath = resolveWorkPath(params.path)
         fs.mkdirSync(path.dirname(filePath), { recursive: true })
         fs.writeFileSync(filePath, buffer)
         return `已创建 Word 文档: ${filePath}`
-      }).catch((e: any) => `创建 Word 文档失败: ${e.message}`)
-    } catch (e: any) {
-      return `创建 Word 文档失败: ${e.message}`
+      }).catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e)
+        return `创建 Word 文档失败: ${msg}`
+      })
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `创建 Word 文档失败: ${msg}`
     }
   },
 })
@@ -445,10 +487,11 @@ registerTool({
     slides: 'JSON 数组：[{"title":"页码标题","content":["要点1","要点2"]}]'
   },
   permission: 2,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const PptxGenJS = getPptx()
-      const pres = new PptxGenJS.default()
+      const pres = new PptxGenJS()
 
       let slides: any[] = []
       try { slides = JSON.parse(params.slides || '[]') } catch { slides = [] }
@@ -481,157 +524,33 @@ registerTool({
 
       return pres.writeFile({ fileName: resolveWorkPath(params.path) }).then(() => {
         return `已创建 PPTX 演示文稿: ${resolveWorkPath(params.path)} (${slides.length} 页)`
-      }).catch((e: any) => `保存 PPTX 失败: ${e.message}`)
-    } catch (e: any) {
-      return `创建 PPTX 失败: ${e.message}`
+      }).catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e)
+        return `保存 PPTX 失败: ${msg}`
+      })
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `创建 PPTX 失败: ${msg}`
     }
   },
 })
 
-// --- Secretary Proactivity Tools ---
 
+// ── mark_todo_done — 标记待办完成 ──
 registerTool({
-  name: 'get_progress',
-  description: '获取所有项目的进度概览和最近的日志',
-  parameters: { days: '查看最近几天的日志（默认 7）' },
-  permission: 1,
-  parallelSafe: true,
-  execute(params) {
-    try {
-      const mem = loadMemory()
-      const parts: string[] = []
-      
-      // Projects
-      parts.push('## 项目进度')
-      for (const p of mem.projects) {
-        const daysAgo = Math.floor((Date.now() - new Date(p.lastUpdate).getTime()) / 86400000)
-        parts.push(`- **${p.name}**: ${p.status} (${daysAgo} 天前更新)`)
-      }
-      
-      // Active todos
-      const active = mem.todos.filter(t => !t.done)
-      if (active.length > 0) {
-        parts.push(`\n## 待办事项 (${active.length})`)
-        parts.push(active.map(t => `- [ ] ${t.text}`).join('\n'))
-      }
-      
-      // Facts summary
-      parts.push(`\n## 已知信息 (${mem.facts.length} 条)`)
-      parts.push(mem.facts.map(f => `- ${f}`).join('\n'))
-
-      // Recent logs
-      const logsDir = path.join(app.getPath('userData'), 'corebuddy-data', 'memory-logs')
-      if (fs.existsSync(logsDir)) {
-        const days = parseInt(params.days) || 7
-        const recent = fs.readdirSync(logsDir)
-          .filter(f => f.endsWith('.md'))
-          .sort()
-          .slice(-days)
-        if (recent.length > 0) {
-          parts.push(`\n## 最近 ${days} 天工作日志`)
-          parts.push(recent.map(f => `- ${f.replace('.md', '')}`).join('\n'))
-        }
-      }
-      
-      return parts.join('\n')
-    } catch (e: any) {
-      return `获取进度失败: ${e.message}`
-    }
-  },
-})
-
-registerTool({
-  name: 'daily_briefing',
-  description: '生成今日工作简报，包含今天对话的次数和主要话题',
-  parameters: {},
-  permission: 1,
-  parallelSafe: true,
-  execute(params) {
-    try {
-      const today = new Date().toISOString().slice(0, 10)
-      const logsDir = path.join(app.getPath('userData'), 'corebuddy-data', 'memory-logs')
-      const logPath = path.join(logsDir, `${today}.md`)
-      
-      let logContent = ''
-      if (fs.existsSync(logPath)) {
-        logContent = fs.readFileSync(logPath, 'utf-8')
-      }
-      
-      const mem = loadMemory()
-      const activeCount = mem.todos.filter(t => !t.done).length
-      const doneCount = mem.todos.filter(t => t.done).length
-      
-      const parts = [`## ${today} 工作简报\n`]
-      
-      if (logContent) {
-        const lines = logContent.split('\n')
-        parts.push(`### 今日活动\n`)
-        const entries = logContent.match(/## \d{2}:\d{2}/g) || []
-        parts.push(`- 对话次数: ${entries.length}`)
-        
-        const userMsgs = (logContent.match(/\*\*用户:\*\*/g) || [])
-        parts.push(`- 提问数: ${userMsgs.length}`)
-      } else {
-        parts.push(`### 今日暂无活动记录`)
-      }
-      
-      parts.push(`\n### 待办状态`)
-      parts.push(`- 待完成: ${activeCount} 项`)
-      parts.push(`- 已完成: ${doneCount} 项`)
-      
-      if (mem.projects.length > 0) {
-        parts.push(`\n### 项目状态`)
-        parts.push(mem.projects.map(p => `- ${p.name}: ${p.status}`).join('\n'))
-      }
-      
-      if (logContent) {
-        parts.push(`\n### 详细日志\n${logContent.slice(0, 2000)}`)
-      }
-      
-      return parts.join('\n')
-    } catch (e: any) {
-      return `生成简报失败: ${e.message}`
-    }
-  },
-})
-
-registerTool({
-  name: 'extract_todos',
-  description: '从对话历史中提取待办事项并保存到记忆',
-  parameters: { convId: '会话 ID（可选，默认当前会话）' },
+  name: 'mark_todo_done',
+  description: '标记一条待办事项为已完成',
+  parameters: { text: '待办事项的文本内容（必须完全匹配）' },
   permission: 2,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
-      const convId = params.convId
-      if (!convId) return '需要指定会话 ID'
-      
-      const DATA_DIR = path.join(app.getPath('userData'), 'corebuddy-data')
-      const ctxPath = path.join(DATA_DIR, 'context', `${convId}.json`)
-      if (!fs.existsSync(ctxPath)) return '会话不存在'
-      
-      const msgs = JSON.parse(fs.readFileSync(ctxPath, 'utf-8'))
-      const userMsgs = msgs.filter((m: any) => m.role === 'user')
-      
-      const todos: string[] = []
-      for (const m of userMsgs) {
-        const c = m.content
-        const matches = c.match(/(?:需要|要做|记得|别忘了|下一步|接下来)([^。\n]{5,50})/g)
-        if (matches) {
-          for (const match of matches) {
-            todos.push(match.trim())
-          }
-        }
-      }
-      
-      if (todos.length === 0) return '未从对话中检测到明确的待办事项'
-      
-      for (const t of todos) {
-        addTodo(t)
-      }
-      
-      return `已从对话中提取 ${todos.length} 条待办:\n${todos.map(t => `- ${t}`).join('\n')}`
-    } catch (e: any) {
-      return `提取待办失败: ${e.message}`
+      if (!params.text) return '请指定待办事项内容'
+      markTodoDone(params.text)
+      return `已标记完成: ${params.text}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `标记待办失败: ${msg}`
     }
   },
 })
@@ -646,6 +565,7 @@ registerTool({
     context: '可选的背景信息（如文件内容、数据等），帮助子代理理解任务',
   },
   permission: 2,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     return new Promise(async (resolve) => {
       try {
@@ -661,13 +581,14 @@ registerTool({
         const result = await spawnSubAgent({
           apiKey: currentApiConfig.apiKey,
           model: currentApiConfig.model,
+          apiUrl: currentApiConfig.apiUrl,
           task: params.task || '',
           context: params.context || '',
           tools: subTools,
         })
         resolve(`[子代理完成]\n${result}`)
-      } catch (e: any) {
-        resolve(`子代理执行失败: ${e.message}`)
+      } catch (e: unknown) {
+        resolve(`子代理执行失败: ${msg}`)
       }
     })
   },
@@ -710,6 +631,7 @@ registerTool({
   parameters: {},
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute() {
     try {
       const result = execSync('wmic logicaldisk get size,freespace,caption,volumename', {
@@ -732,8 +654,9 @@ registerTool({
         }
       }
       return parts.join('\n')
-    } catch (e: any) {
-      return `获取磁盘信息失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `获取磁盘信息失败: ${msg}`
     }
   },
 })
@@ -744,6 +667,7 @@ registerTool({
   parameters: { scope: '扫描范围：all(全部)|temp(临时文件)|large(大文件)|downloads(下载)', quick: '是否快速模式(跳过深度扫描)，默认true' },
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     const scope = params.scope || 'all'
     const quick = params.quick !== 'false'
@@ -902,8 +826,9 @@ registerTool({
       }
 
       return results.join('\n')
-    } catch (e: any) {
-      return `系统扫描失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `系统扫描失败: ${msg}`
     }
   },
 })
@@ -916,6 +841,7 @@ registerTool({
     dry_run: '是否仅预览不删除（默认true，设为false才真正执行）',
   },
   permission: 3,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     const target = params.target
     const dryRun = params.dry_run !== 'false'
@@ -1055,8 +981,9 @@ registerTool({
       }
 
       return preview.join('\n')
-    } catch (e: any) {
-      return `清理失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `清理失败: ${msg}`
     }
   },
 })
@@ -1069,6 +996,7 @@ registerTool({
     batch_id: '恢复时指定批次ID（从list获取），不指定则恢复最近一批',
   },
   permission: 2,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const backupRoot = path.join(app.getPath('userData'), 'corebuddy-data', 'file-backup')
@@ -1166,8 +1094,9 @@ registerTool({
       lines.push('💡 使用 `restore_files action=restore batch_id=<ID>` 恢复指定批次')
       lines.push('💡 使用 `restore_files action=cleanup` 清除所有备份')
       return lines.join('\n')
-    } catch (e: any) {
-      return `恢复操作失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `恢复操作失败: ${msg}`
     }
   },
 })
@@ -1182,6 +1111,7 @@ registerTool({
   },
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const dir = params.directory || path.join(os.homedir(), 'Desktop')
@@ -1204,8 +1134,9 @@ registerTool({
       const total = largeFiles.reduce((s, f) => s + f.size, 0)
       lines.push('', `总计: ${formatSize(total)}`)
       return lines.join('\n')
-    } catch (e: any) {
-      return `搜索大文件失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `搜索大文件失败: ${msg}`
     }
   },
 })
@@ -1216,6 +1147,7 @@ registerTool({
   parameters: {},
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute() {
     try {
       const homeDir = os.homedir()
@@ -1259,8 +1191,9 @@ registerTool({
 
       if (lines.length === 1) lines.push('未发现启动项')
       return lines.join('\n')
-    } catch (e: any) {
-      return `获取启动项失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `获取启动项失败: ${msg}`
     }
   },
 })
@@ -1271,6 +1204,7 @@ registerTool({
   parameters: {},
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute() {
     try {
       const totalMem = os.totalmem()
@@ -1310,8 +1244,9 @@ registerTool({
       lines.push(`- 📋 Windows 版本: ${winVer}`)
 
       return lines.join('\n')
-    } catch (e: any) {
-      return `获取系统健康失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `获取系统健康失败: ${msg}`
     }
   },
 })
@@ -1324,6 +1259,7 @@ registerTool({
   parameters: {},
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute() {
     try {
       const lines = ['## 🔧 驱动程序检查\n']
@@ -1366,8 +1302,9 @@ registerTool({
       lines.push('- 到设备制造商官网（Dell/Lenovo/HP）下载最新驱动')
       lines.push('- 使用设备管理器检查黄色感叹号标记的设备')
       return lines.join('\n')
-    } catch (e: any) {
-      return `驱动检查失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `驱动检查失败: ${msg}`
     }
   },
 })
@@ -1378,6 +1315,7 @@ registerTool({
   parameters: {},
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute() {
     try {
       const lines = ['## 🛡️ 安全状态检查\n']
@@ -1422,8 +1360,9 @@ registerTool({
       lines.push('- 定期运行 Windows Update 获取安全更新')
       lines.push('- 不要下载来路不明的软件')
       return lines.join('\n')
-    } catch (e: any) {
-      return `安全检查失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `安全检查失败: ${msg}`
     }
   },
 })
@@ -1434,6 +1373,7 @@ registerTool({
   parameters: {},
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute() {
     try {
       const lines = ['## 🌐 网络诊断\n']
@@ -1485,8 +1425,9 @@ registerTool({
       lines.push('- 如果DNS问题，尝试更换为 8.8.8.8 或 223.5.5.5')
       lines.push('- 检查路由器是否正常工作')
       return lines.join('\n')
-    } catch (e: any) {
-      return `网络诊断失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `网络诊断失败: ${msg}`
     }
   },
 })
@@ -1497,6 +1438,7 @@ registerTool({
   parameters: {},
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute() {
     try {
       const lines = ['## 📥 Windows 更新检查\n']
@@ -1541,8 +1483,9 @@ registerTool({
       lines.push('- 保持 Windows 自动更新开启，修复安全漏洞')
       lines.push('- 每月第二个周二（Patch Tuesday）微软发布安全更新')
       return lines.join('\n')
-    } catch (e: any) {
-      return `更新检查失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `更新检查失败: ${msg}`
     }
   },
 })
@@ -1553,6 +1496,7 @@ registerTool({
   parameters: {},
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute() {
     try {
       const lines = ['## 📊 进程资源分析\n']
@@ -1596,8 +1540,9 @@ registerTool({
       lines.push('⚠️ 注意：不要随意结束系统进程或未知进程，可能导致系统不稳定')
       lines.push('如需结束进程，请在任务管理器中操作')
       return lines.join('\n')
-    } catch (e: any) {
-      return `进程分析失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `进程分析失败: ${msg}`
     }
   },
 })
@@ -1614,6 +1559,7 @@ registerTool({
   },
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const searchDir = params.directory || os.homedir()
@@ -1681,8 +1627,9 @@ registerTool({
       const totalSize = results.reduce((s, f) => s + f.size, 0)
       lines.push(`总计: ${results.length} 个文件, ${formatSize(totalSize)}`)
       return lines.join('\n')
-    } catch (e: any) {
-      return `搜索文件失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `搜索文件失败: ${msg}`
     }
   },
 })
@@ -1693,6 +1640,7 @@ registerTool({
   parameters: {},
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute() {
     try {
       const lines = ['## ⏱️ 开机启动项分析\n']
@@ -1739,8 +1687,9 @@ registerTool({
       lines.push('- 使用「任务管理器 → 启动」查看启动影响（高/中/低）')
       lines.push('- 安全软件的启动项通常不建议禁用')
       return lines.join('\n')
-    } catch (e: any) {
-      return `启动项分析失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `启动项分析失败: ${msg}`
     }
   },
 })
@@ -1755,6 +1704,7 @@ registerTool({
   },
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const filePath = params.path
@@ -1822,20 +1772,31 @@ registerTool({
 
       // PDF
       if (ext === '.pdf') {
-        const pdfParse = require('pdf-parse')
+        const { PDFParse } = require('pdf-parse')
         const buffer = fs.readFileSync(filePath)
         return new Promise((resolve) => {
-          pdfParse(buffer).then((data: any) => {
-            const text = data.text || '(PDF 无文字内容)'
-            const info = data.numpages ? `[PDF ${data.numpages} 页, ${data.numrender ? '已渲染' : ''}]\n\n` : '[PDF]\n\n'
-            resolve(info + text.slice(0, maxLen) + (text.length > maxLen ? `\n...(共 ${text.length} 字符, 已截断)` : ''))
-          }).catch(() => resolve(`PDF 解析失败。请确保文件无损坏。\n路径: ${filePath}\n大小: ${(stat.size / 1024).toFixed(1)} KB`))
+          ;(async () => {
+            try {
+              const parser = new PDFParse({ data: buffer })
+              const info = await parser.getInfo()
+              const textResult = await parser.getText()
+              await parser.destroy()
+              const text = textResult?.text || '(PDF 无文字内容)'
+              const numPages = info?.total || 0
+              const header = numPages ? `[PDF ${numPages} 页]\n\n` : '[PDF]\n\n'
+              resolve(header + text.slice(0, maxLen) + (text.length > maxLen ? `\n...(共 ${text.length} 字符, 已截断)` : ''))
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : String(e)
+              resolve(`PDF 解析失败: ${msg}\n路径: ${filePath}\n大小: ${(stat.size / 1024).toFixed(1)} KB`)
+            }
+          })()
         })
       }
 
       return `不支持的文档格式: ${ext}\n支持: .docx .pptx .xlsx .pdf .txt .md .csv .json .html`
-    } catch (e: any) {
-      return `文档读取失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `文档读取失败: ${msg}`
     }
   },
 })
@@ -1850,6 +1811,7 @@ registerTool({
   },
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const filePath = params.path
@@ -1875,8 +1837,9 @@ registerTool({
           resolve(`OCR 识别失败: ${err.message}\n\n请确保图片可正常打开。首次使用需下载中文语言包(~12MB)。`)
         })
       })
-    } catch (e: any) {
-      return `图片识别失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `图片识别失败: ${msg}`
     }
   },
 })
@@ -1890,6 +1853,7 @@ registerTool({
     edits: '编辑项数组，每项格式: [{old_string: "旧文本", new_string: "新文本", replace_all: false}]，replace_all=true 替换全部出现',
   },
   permission: 2,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const filePath = params.path
@@ -1919,8 +1883,9 @@ registerTool({
         return `文件 ${path.basename(filePath)} 已更新: ${changed} 处修改`
       }
       return '文件无变化'
-    } catch (e: any) {
-      return `批量编辑失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `批量编辑失败: ${msg}`
     }
   },
 })
@@ -1935,6 +1900,7 @@ registerTool({
     output: '输出路径（可选，留空自动加 _edited 后缀）',
   },
   permission: 2,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const srcPath = params.path
@@ -2014,8 +1980,9 @@ registerTool({
           else resolve(`图片编辑完成: ${output}\n操作: ${instruction}\n尺寸: ${info.width}x${info.height}, 格式: ${info.format}`)
         })
       }) as any
-    } catch (e: any) {
-      return `图片编辑失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `图片编辑失败: ${msg}`
     }
   },
 })
@@ -2030,6 +1997,7 @@ registerTool({
   },
   permission: 1,
   parallelSafe: true,
+  domains: ['code'],
   execute(params) {
     try {
       const filePath = params.path
@@ -2072,8 +2040,9 @@ registerTool({
       }
       
       return parts.join('\n')
-    } catch (e: any) {
-      return `Notebook 读取失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `Notebook 读取失败: ${msg}`
     }
   },
 })
@@ -2088,6 +2057,7 @@ registerTool({
   },
   permission: 1,
   parallelSafe: false,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const names = (params.servers || '').split(',').map((s: string) => s.trim()).filter(Boolean)
@@ -2113,8 +2083,9 @@ registerTool({
         return `所有 MCP 服务器已就绪:\n${results.join('\n')}`
       }
       return `部分服务器未就绪:\n${results.join('\n')}\n\n建议: 1) 检查连接器页面配置 2) 确认外部服务可访问 3) 稍后重试`
-    } catch (e: any) {
-      return `MCP 状态查询失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `MCP 状态查询失败: ${msg}`
     }
   },
 })
@@ -2128,6 +2099,7 @@ registerTool({
     steps: '步骤数组 JSON: [{"tool":"read_file","params":{"path":"x.txt"},"description":"读取文件"}]',
   },
   permission: 2,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const name = params.name || 'unnamed'
@@ -2145,8 +2117,9 @@ registerTool({
 ${plan}
 
 请按顺序依次执行以上步骤。每步完成后汇报结果，再执行下一步。`
-    } catch (e: any) {
-      return `工作流创建失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `工作流创建失败: ${msg}`
     }
   },
 })
@@ -2170,6 +2143,7 @@ registerTool({
   },
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     const cmd = slashCommands.get(params.command)
     if (!cmd) {
@@ -2192,6 +2166,7 @@ registerTool({
     members: '自定义成员数组（可选），格式 [{name, role, prompt}]。留空使用默认三角色。',
   },
   permission: 2,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     try {
       const name = params.name
@@ -2214,8 +2189,9 @@ registerTool({
       activeTeams.set(name, { members, messages: [] })
       const list = members.map(m => `  ${m.name} (${m.role})`).join('\n')
       return `团队 "${name}" 已创建:\n${list}\n\n使用 send_message 向队友发送消息。`
-    } catch (e: any) {
-      return `创建团队失败: ${e.message}`
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return `创建团队失败: ${msg}`
     }
   },
 })
@@ -2225,6 +2201,7 @@ registerTool({
   description: '删除 Agent 协作团队。',
   parameters: { name: '团队名称' },
   permission: 2,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     if (!activeTeams.has(params.name)) return `团队 "${params.name}" 不存在`
     activeTeams.delete(params.name)
@@ -2241,6 +2218,7 @@ registerTool({
     content: '消息内容',
   },
   permission: 1,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     const team = activeTeams.get(params.team)
     if (!team) return `团队 "${params.team}" 不存在`
@@ -2248,7 +2226,26 @@ registerTool({
     if (!to) return `成员 "${params.to}" 不在团队中。成员: ${team.members.map(m => m.name).join(', ')}`
 
     team.messages.push({ from: 'ai', to: params.to, content: params.content })
-    return `[${to.role} - ${to.name}]\n任务: ${params.content}\n\n用 send_message 回复以协调下一步。`
+
+    // If API config available, spawn sub-agent to execute the teammate's task
+    if (currentApiConfig) {
+      const subTools = getAllTools()
+        .filter(t => t.permission <= 2 && t.name !== 'spawn_agent' && t.name !== 'send_message')
+        .map(t => ({ name: t.name, description: t.description, permission: t.permission, execute: t.execute }))
+
+      spawnSubAgent({
+        apiKey: currentApiConfig.apiKey, model: currentApiConfig.model,
+        apiUrl: currentApiConfig.apiUrl,
+        task: `${to.role} (${to.name}) 收到任务: ${params.content}`,
+        tools: subTools,
+      }).then(result => {
+        team.messages.push({ from: to.name, to: 'ai', content: result.slice(0, 2000) })
+      }).catch(() => {})
+
+      return `已向 ${to.role} (${to.name}) 分派任务，正在异步执行...\n\n任务: ${params.content}`
+    }
+
+    return `[${to.role} - ${to.name}]\n任务: ${params.content}\n\n(需配置 API Key 以启用自动执行)`
   },
 })
 
@@ -2261,6 +2258,7 @@ registerTool({
   },
   permission: 1,
   parallelSafe: true,
+  domains: ['office', 'code', 'creative'],
   execute(params) {
     const schema = typeof params.schema === 'string' ? params.schema : JSON.stringify(params.schema)
     return `请严格按照以下 JSON Schema 输出，只返回 JSON 对象，不要加 markdown 包装:

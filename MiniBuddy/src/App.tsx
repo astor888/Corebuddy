@@ -1,235 +1,43 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
-import type { PermissionLevel, ChatMode, SkillInfo, ArtifactInfo, StreamDoneData } from './types/electron'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
-import rehypeRaw from 'rehype-raw'
+import type { PermissionLevel, ChatMode, PersonaMode, SkillInfo, MarketplaceSkill, ArtifactInfo, StreamDoneData, ConnectorConfig } from './types/electron'
 import logoText from '../assets/logo-text.png'
 import logoIcon from '../assets/logo-icon.png'
 import appIcon from '../assets/app-icon.jpg'
 import aiAvatar from '../assets/ai-avatar-round.png'
 
-// ====== Helper Components ======
+import { iconSVG, fileIcon, uid, api, permToNumber, CollapsibleSection } from './components/shared'
+import { FormattedContent } from './components/MessageRenderer'
+import { ArtifactsPanel } from './components/ArtifactsPanel'
+import { FilesPanel } from './components/FilesPanel'
+import { ChangesPanel } from './components/ChangesPanel'
+import { PreviewPanel } from './components/PreviewPanel'
+import { SkillsView } from './components/SkillsView'
+import { ConnectorsView } from './components/ConnectorsView'
+import { ExpertsView } from './components/ExpertsView'
+import { AutomationsView } from './components/AutomationsView'
+import { MoreView } from './components/MoreView'
+import { SettingsModal } from './components/SettingsModal'
+import { MemoryModal } from './components/MemoryModal'
 
-function CollapsibleSection({ title, children, defaultOpen = true }: {
-  title: string; children: React.ReactNode; defaultOpen?: boolean
-}) {
-  const [open, setOpen] = useState(defaultOpen)
-  return (
-    <div className="border border-[#F2F3F5] rounded-md mb-2 bg-transparent">
-      <div className="flex items-center px-3 py-1.5 cursor-pointer select-none" onClick={() => setOpen(!open)}>
-        <span className="w-1.5 h-1.5 rounded-full bg-[#C9CDD4] mr-2 shrink-0"></span>
-        <span className="text-[11px] text-[#86909C] flex-1 truncate">{title}</span>
-        <span className="text-[10px] text-[#C9CDD4] shrink-0 ml-2">{open ? '收起' : '展开'}</span>
-      </div>
-      {open && <div className="px-3 pb-2">{children}</div>}
-    </div>
-  )
-}
-
-// ====== Mermaid Diagram Renderer ======
-function MermaidBlock({ chart }: { chart: string }) {
-  const [svg, setSvg] = useState('')
-  const [err, setErr] = useState('')
-
-  useEffect(() => {
-    let cancelled = false
-    const id = `mermaid-${Math.random().toString(36).slice(2, 8)}`
-    import('mermaid').then(m => {
-      if (cancelled) return
-      m.default.initialize({ startOnLoad: false, theme: 'default' })
-      m.default.render(id, chart).then(({ svg: s }) => {
-        if (!cancelled) setSvg(s)
-      }).catch((e: any) => {
-        if (!cancelled) setErr(String(e))
-      })
-    }).catch(e => {
-      if (!cancelled) setErr(String(e))
-    })
-    return () => { cancelled = true }
-  }, [chart])
-
-  if (err) return <div className="my-2 p-3 rounded-lg bg-[#FFF0F0] border border-[#FFE0E0] text-[12px] text-[#EC5B56]">图表渲染失败: {err}</div>
-  if (!svg) return <div className="my-2 p-4 rounded-lg bg-[#F7F8FA] text-center text-[12px] text-[#86909C]">渲染图表中...</div>
-  return <div className="my-3 flex justify-center overflow-x-auto" dangerouslySetInnerHTML={{ __html: svg }} />
-}
-
-// ====== Code Block Renderer (with syntax highlighting + copy + language label) ======
-function CodeBlockRenderer({ className, children, ...props }: any) {
-  const match = /language-(\w+)/.exec(className || '')
-  const lang = match ? match[1] : ''
-  const text = String(children).replace(/\n$/, '')
-  const [copied, setCopied] = useState(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout>>()
-
-  // Cleanup timeout on unmount
-  useEffect(() => {
-    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
-  }, [])
-
-  // Mermaid diagram block
-  if (lang === 'mermaid') return <MermaidBlock chart={text} />
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text).catch(() => {})
-    setCopied(true)
-    if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => setCopied(false), 2000)
-  }
-
-  // Code block (multi-line) — render with header bar + copy button
-  if (text.includes('\n') || className) {
-    return (
-      <div className="relative my-3 rounded-lg border border-[#E5E6EB] overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-1.5 bg-[#F7F8FA] border-b border-[#E5E6EB]">
-          <span className="text-[11px] text-[#86909C] font-mono font-medium">{lang || 'code'}</span>
-          <button
-            onClick={handleCopy}
-            className="flex items-center gap-1 text-[11px] text-[#86909C] hover:text-[#165DFF] transition-colors"
-          >
-            {copied ? (
-              <><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 6l2 2 5-5" stroke="#61C454" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg><span className="text-[#61C454]">已复制</span></>
-            ) : (
-              <><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="2" y="2" width="7" height="8" rx="1" stroke="currentColor" strokeWidth="1"/><path d="M3.5 1.5h6a1 1 0 011 1v7" stroke="currentColor" strokeWidth="1"/></svg><span>复制</span></>
-            )}
-          </button>
-        </div>
-        <pre className="!bg-[#FAFBFC] !m-0 !p-4 overflow-x-auto text-[13px] leading-relaxed">
-          <code className={className} {...props}>{children}</code>
-        </pre>
-      </div>
-    )
-  }
-
-  // Inline code
-  return <code className="text-[13px] bg-[#F2F3F5] px-1.5 py-0.5 rounded text-[#165DFF] font-mono" {...props}>{children}</code>
-}
-
-// ====== Rich Markdown Renderer (react-markdown + GFM + syntax highlighting) ======
-function FormattedContent({ content }: { content: string }) {
-  if (!content.trim()) return <span className="text-[#C9CDD4]">(空)</span>
-
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight, rehypeRaw]}
-      components={{
-        // Override pre to let code renderer control the wrapper
-        pre({ children }: any) {
-          return <>{children}</>
-        },
-        code: CodeBlockRenderer,
-        // Blockquote
-        blockquote({ children }: any) {
-          return <blockquote className="border-l-[3px] border-[#165DFF] bg-[#F7F8FA] pl-4 pr-3 py-2 my-2 rounded-r text-[14px] text-[#4E5969] leading-relaxed">{children}</blockquote>
-        },
-        // Table wrapper
-        table({ children }: any) {
-          return <div className="overflow-x-auto my-2 border border-[#E5E6EB] rounded-lg"><table className="w-full text-[13px]">{children}</table></div>
-        },
-        thead({ children }: any) {
-          return <thead className="bg-[#F7F8FA]">{children}</thead>
-        },
-        th({ children }: any) {
-          return <th className="px-3 py-1.5 text-left font-medium text-[#4E5969] border-b border-[#E5E6EB]">{children}</th>
-        },
-        td({ children }: any) {
-          return <td className="px-3 py-1.5 text-[#1D2129] border-b border-[#E5E6EB]">{children}</td>
-        },
-        // Links open in new tab
-        a({ children, href }: any) {
-          return <a href={href} target="_blank" rel="noopener noreferrer" className="text-[#165DFF] underline">{children}</a>
-        },
-        // Images
-        img({ src, alt }: any) {
-          return <img src={src} alt={alt} className="max-w-full rounded-lg my-2" />
-        },
-        // Paragraphs
-        p({ children }: any) {
-          return <p className="text-[14px] text-[#1D2129] leading-relaxed my-1.5 whitespace-pre-wrap">{children}</p>
-        },
-        // Headings
-        h1({ children }: any) {
-          return <h1 className="text-[18px] font-semibold text-[#1D2129] mt-4 mb-2">{children}</h1>
-        },
-        h2({ children }: any) {
-          return <h2 className="text-[16px] font-semibold text-[#1D2129] mt-3 mb-1.5">{children}</h2>
-        },
-        h3({ children }: any) {
-          return <h3 className="text-[15px] font-semibold text-[#1D2129] mt-3 mb-1">{children}</h3>
-        },
-        // Lists
-        ul({ children }: any) {
-          return <ul className="list-disc list-inside text-[14px] text-[#1D2129] leading-relaxed my-1.5 space-y-0.5">{children}</ul>
-        },
-        ol({ children }: any) {
-          return <ol className="list-decimal list-inside text-[14px] text-[#1D2129] leading-relaxed my-1.5 space-y-0.5">{children}</ol>
-        },
-        li({ children }: any) {
-          return <li className="text-[14px] text-[#1D2129] leading-relaxed">{children}</li>
-        },
-        // Strong / Emphasis
-        strong({ children }: any) {
-          return <strong className="font-semibold text-[#1D2129]">{children}</strong>
-        },
-        // Horizontal rule
-        hr() {
-          return <hr className="my-3 border-[#E5E6EB]" />
-        },
-        // Strikethrough
-        del({ children }: any) {
-          return <del className="text-[#C9CDD4]">{children}</del>
-        },
-      }}
-    >
-      {content}
-    </ReactMarkdown>
-  )
-}
-
-// Outline SVG icons — WorkBuddy style, 16x16, stroke only (no fill)
-function iconSVG(name: string) {
-  const icons: Record<string, JSX.Element> = {
-    chat: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v7a1.5 1.5 0 01-1.5 1.5H5.5L3 13.5v-10z"/><path d="M5 6h6M5 8.5h4"/></svg>,
-    plugin: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M8 2v2.5M8 11.5V14M2 8h2.5M11.5 8H14M5 5l1.7 1.7M9.3 9.3L11 11M11 5L9.3 6.7M6.7 9.3L5 11"/><circle cx="8" cy="8" r="1.2"/></svg>,
-    expert: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"><path d="M8 2l1.5 4.5H14l-3.5 2.8 1.2 4.2L8 10.8 4.3 13.5l1.2-4.2L2 6.5h4.5L8 2z"/></svg>,
-    auto: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M3 8h1.5M11.5 8H13M8 3v1.5M8 11.5V13M4.5 4.5l1 1M10.5 10.5l1 1M4.5 11.5l1-1M10.5 5.5l1-1"/><circle cx="8" cy="8" r="3"/><circle cx="8" cy="8" r="1.2"/></svg>,
-    more: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><circle cx="4" cy="8" r="1"/><circle cx="8" cy="8" r="1"/><circle cx="12" cy="8" r="1"/></svg>,
-    plus: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>,
-    gear: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v1.2M8 13.3v1.2M2.5 3l1.2.6M12.3 12.4l1.2.6M1.5 8h1.2M13.3 8h1.2M2.5 13l1.2-.6M12.3 3.6l1.2-.6"/></svg>,
-    chart: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><rect x="2" y="9" width="3" height="5.5" rx="0.5"/><rect x="6.5" y="5.5" width="3" height="9" rx="0.5"/><rect x="11" y="2.5" width="3" height="12" rx="0.5"/></svg>,
-    palette: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><circle cx="8" cy="8" r="6.5"/><circle cx="6" cy="6.5" r="1.2"/><circle cx="10.5" cy="8" r="1"/><circle cx="6" cy="10.5" r="1"/></svg>,
-    help: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><circle cx="8" cy="8" r="6.5"/><path d="M6.5 6a1.5 1.5 0 012.8-.3M8 11v.01"/></svg>,
-    update: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 8a5.5 5.5 0 019.8-3.5V3M13.5 8a5.5 5.5 0 01-9.8 3.5V13"/><polyline points="11,3.5 14,2 14,6"/><polyline points="2,14 5,12 1,12"/></svg>,
-    logout: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2.5H3.5a1 1 0 00-1 1v9a1 1 0 001 1H6M11 8H5.5M9.5 5.5L13 8l-3.5 2.5"/></svg>,
-    user: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><circle cx="8" cy="5.5" r="2.5"/><path d="M3 13.5c0-2 2.2-3.5 5-3.5s5 1.5 5 3.5"/></svg>,
-    money: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5"/><circle cx="8" cy="8" r="2.5"/><path d="M3 6v4M13 6v4" strokeDasharray="1 2"/></svg>,
-    rocket: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"><path d="M8 2l-2 3H3L4.5 8l-1.5 3h3l2 3 2-3h3l-1.5-3L13 5H10L8 2z"/><circle cx="8" cy="8" r="1"/></svg>,
-    skill: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3"><rect x="1.5" y="1.5" width="4.5" height="4.5" rx="1"/><rect x="10" y="1.5" width="4.5" height="4.5" rx="1"/><rect x="1.5" y="10" width="4.5" height="4.5" rx="1"/><rect x="10" y="10" width="4.5" height="4.5" rx="1"/></svg>,
-    clock: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="6.5"/><path d="M8 5v3.5L10.5 10"/></svg>,
-    doc: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2h6l4 4v8.5a.5.5 0 01-.5.5h-9A.5.5 0 013 14.5V2.5A.5.5 0 013.5 2z"/><path d="M9 2v4h4"/></svg>,
-    connector: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3"><circle cx="5" cy="5" r="2"/><circle cx="11" cy="11" r="2"/><path d="M6.5 6.5l3 3"/></svg>,
-    bell: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M8 2a4 4 0 00-4 4v2.5L2.5 10v1.5h11V10L12 8.5V6a4 4 0 00-4-4z"/><path d="M6.5 13A1.5 1.5 0 008 14.5 1.5 1.5 0 009.5 13"/></svg>,
-    sun: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1M8 13.5v1M2.5 3l.7.7M12.8 12.3l.7.7M1.5 8h1M13.5 8h1M2.5 13l.7-.7M12.8 3.7l.7-.7"/></svg>,
-    code: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5L2 8l3 3M11 5l3 3-3 3M9.5 2.5l-3 11"/></svg>,
-    mail: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><rect x="1.5" y="3" width="13" height="10" rx="1"/><path d="M1.5 3.5L8 9l6.5-5.5"/></svg>,
-    data: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><rect x="2" y="9" width="3" height="5.5" rx="0.5"/><rect x="6.5" y="5.5" width="3" height="9" rx="0.5"/><rect x="11" y="2" width="3" height="12.5" rx="0.5"/></svg>,
-  }
-  return icons[name] || null
-}
-
-// ====== Main App ======
+// ====== Types & Interfaces ======
 
 interface Msg { id: string; role: string; content: string; time: string }
 interface Conv { id: string; title: string; updatedAt: string }
 interface ScenePrompt { label: string; text: string }
-interface SceneItem { id: string; name: string; icon: string; desc: string; color: string; systemPrompt: string; prompts: ScenePrompt[] }
+interface SceneItem { id: string; name: string; icon: string; desc: string; color: string; systemPrompt: string; prompts: ScenePrompt[]; keywords: string[]; persona?: PersonaMode }
+interface ToolStep { name: string; params: string; status: 'pending' | 'running' | 'completed' | 'failed'; result?: string; artifact?: boolean }
+interface PendingTask {
+  id: string
+  text: string
+  attachments: Array<{ name: string; path: string; type: string; size: number }>
+  timestamp: number
+}
 interface AppState {
   loggedIn: boolean; userName: string; apiKey: string
   convs: Conv[]; activeId: string | null; msgs: Msg[]
   search: string; input: string; loading: boolean
   view: 'chat' | 'skills' | 'experts' | 'automations' | 'more' | 'connectors'; modelId: string
-  perm: PermissionLevel; mode: ChatMode; persona: 'office' | 'creative'; showSet: boolean; showRight: boolean; showMem: boolean
+  perm: PermissionLevel; mode: ChatMode; persona: 'office' | 'creative' | 'code'; showSet: boolean; showRight: boolean; showMem: boolean
   rightTab: 'artifacts' | 'files' | 'changes' | 'preview'
   thinking: boolean
   showProfile: boolean
@@ -237,61 +45,66 @@ interface AppState {
   onboardingStep: number
   artifacts: ArtifactInfo[]
   toolStatus: { active: boolean; names: string[]; completed: number; total: number; action: string }
+  toolSteps: ToolStep[]
+  creditUsed: number
   activeScene: string | null
+  attachments: Array<{ name: string; path: string; type: string; size: number }>
+  pendingTasks: PendingTask[]
+  autoConfig: { defaultModel: string; imageModel: string }
 }
 
 // ====== Scene Data (可后台自定义，当前为模拟数据) ======
 const sceneData: SceneItem[] = [
-  { id: 'ppt', name: '幻灯片', icon: 'doc', color: '#F53F3F', desc: '生成演示文稿',
+  { id: 'ppt', name: '幻灯片', icon: 'doc', color: '#F53F3F', desc: '生成演示文稿', keywords: ['pptx', 'ppt', '幻灯片', '演示文稿', 'slide', 'slides', '汇报ppt', '提案ppt', '路演', '演讲', 'keynote'],
     systemPrompt: '【场景：幻灯片制作】你是一个PPT制作专家。先和用户确认：页数、风格（简洁/商务/创意）、配色偏好、是否需要图表。确认后使用 create_pptx 工具生成。生成后将文件路径告知用户。',
     prompts: [
       { label: '生成公司介绍PPT', text: '帮我生成一份10页的公司介绍PPT，包含公司概况、业务范围、核心优势、团队介绍、发展规划。风格简洁专业。' },
       { label: '项目汇报幻灯片', text: '帮我制作项目进展汇报PPT，包含项目背景、当前进度、关键成果、风险与对策、下阶段计划。' },
       { label: '产品发布演示', text: '创建一份产品发布会PPT，包含产品亮点、功能演示、市场分析、定价策略、上市路线图。' },
     ]},
-  { id: 'code', name: '程序员', icon: 'code', color: '#165DFF', desc: '写代码、调试、架构',
+  { id: 'code', name: '程序员', icon: 'code', color: '#165DFF', desc: '写代码、调试、架构', keywords: ['代码', '编程', '开发', '写代码', 'debug', '修复', 'bug', '调试', '架构', '重构', '代码审查', 'code', 'programming', '算法', 'lru缓存', '前端', '后端'],
     systemPrompt: '【场景：编程开发】你是一个资深全栈工程师。先理解用户的需求，确认技术栈和关键设计点后再动手。使用 write_file 工具创建代码文件，文件默认保存到输出目录。',
     prompts: [
       { label: '写一个新功能', text: '帮我用TypeScript实现一个LRU缓存类，要求O(1)时间复杂度的get和put操作，支持泛型。' },
       { label: '代码审查', text: '请审查以下代码，关注安全性、性能、可维护性，给出具体改进建议。' },
       { label: '架构设计', text: '帮我设计一个微服务架构的系统，包括用户服务、订单服务、支付服务，画出架构图并说明技术选型。' },
     ]},
-  { id: 'write', name: '内容创作', icon: 'palette', color: '#FF7D00', desc: '写文章、文案、报告',
+  { id: 'write', name: '内容创作', icon: 'palette', color: '#FF7D00', desc: '写文章、文案、报告', keywords: ['文章', '文案', '内容', '写作', '创作', '公众号', '博客', '新闻稿', '小红书', '文案策划', '报告', '申报材料'],
     systemPrompt: '【场景：内容创作】你是一个专业内容创作者。先和用户确认文章的角色定位、篇幅和风格，再开始写作。输出较长内容时使用 create_markdown 工具保存为文件。',
     prompts: [
       { label: '写一篇公众号文章', text: '帮我写一篇关于"AI如何改变中小企业工作方式"的公众号文章，1500字左右，面向企业管理者。' },
       { label: '项目申报材料', text: '帮我撰写一份高新企业认定申报材料，包含企业基本情况、核心技术与知识产权、研发团队介绍。' },
       { label: '产品文案', text: '为一款面向程序员的AI编程助手写产品介绍文案，突出提高效率、降低错误率等核心卖点。' },
     ]},
-  { id: 'legal', name: '法律/合同', icon: 'data', color: '#7B61FF', desc: '法律分析、合同审查',
+  { id: 'legal', name: '法律/合同', icon: 'data', color: '#7B61FF', desc: '法律分析、合同审查', keywords: ['法律', '合同', '协议', '保护', '版权', '知识产权', '合规', '律师', '诉讼', '保密协议', '条款', '违约责任', '合规建议', '法律风险'],
     systemPrompt: '【场景：法律/合同】你是一个法律顾问。先了解具体场景和关注点，再给出分析。生成合同文档时使用 create_doc 工具保存为 Word 文件。',
     prompts: [
       { label: '审查合同条款', text: '请帮我审查这份合同的关键条款，重点关注：违约责任、知识产权归属、保密条款、争议解决方式。' },
       { label: '生成保密协议', text: '帮我生成一份员工保密协议，包含保密范围、保密期限、违约责任、竞业限制条款。' },
       { label: '法律风险分析', text: '分析以下商业行为可能存在的法律风险，并给出合规建议。' },
     ]},
-  { id: 'research', name: '深度研究', icon: 'chart', color: '#00B42A', desc: '数据分析、市场调研',
+  { id: 'research', name: '深度研究', icon: 'chart', color: '#00B42A', desc: '数据分析、市场调研', keywords: ['研究', '调研', '分析', '市场', '数据', '报告', '趋势', '行业', '竞品', '用户调研', '市场规模', '市场分析', '行业趋势'],
     systemPrompt: '【场景：深度研究分析】你是一个市场研究分析师。先确认范围、维度、输出格式，再做分析。生成报告时使用 create_markdown 或 create_doc 工具保存文件。',
     prompts: [
       { label: '市场调研报告', text: '帮我做一份关于中国AI办公软件市场的调研报告，包含市场规模、主要玩家、用户需求、发展趋势。' },
       { label: '竞品分析', text: '分析飞书、钉钉、企业微信三款产品的功能差异、定价策略和用户口碑，用表格呈现。' },
       { label: '行业趋势分析', text: '分析2026年企业数字化转型的5大趋势，每个趋势给出具体数据和案例支撑。' },
     ]},
-  { id: 'ops', name: '运营/策划', icon: 'rocket', color: '#F77234', desc: '活动策划、用户运营',
+  { id: 'ops', name: '运营/策划', icon: 'rocket', color: '#F77234', desc: '活动策划、用户运营', keywords: ['运营', '策划', '活动', '裂变', '私域', '社群', '营销', '推广', '转化', '用户运营', '内容运营', '品牌', '活动策划'],
     systemPrompt: '【场景：运营策划】你是一个资深运营策划。先了解预算、目标人群和核心KPI，再输出方案。使用 create_markdown 保存为文档。',
     prompts: [
       { label: '活动策划方案', text: '帮我在微信私域策划一场用户裂变活动，包含活动目标、玩法设计、奖品设置、推广节奏、预期效果。' },
       { label: '社群运营规划', text: '制定一份知识付费社群3个月的运营计划，包括内容排期、互动玩法、转化路径。' },
       { label: '营销文案', text: '为我即将举办的线上直播写推广文案，主题是"中小企业数字化转型实战"，目标吸引500人报名。' },
     ]},
-  { id: 'finance', name: '财务/投资', icon: 'money', color: '#E8652D', desc: '财务分析、投资研究',
+  { id: 'finance', name: '财务/投资', icon: 'money', color: '#E8652D', desc: '财务分析、投资研究', keywords: ['财务', '投资', '税务', '营收', '利润', '现金流', '财报', '估值', '股票', '基金', '资产', '负债', '审计', '财务分析', '投资分析'],
     systemPrompt: '【场景：财务投资分析】你是一个财务分析师。先确认分析维度，再给出结论。生成报告时创建 .md 或 .docx 文件。',
     prompts: [
       { label: '财务报表分析', text: '帮我分析以下财务数据，重点关注：营收增长率、毛利率趋势、现金流状况、资产负债率。给出投资建议。' },
       { label: '投资分析报告', text: '对某家上市公司做基本面分析，包括行业地位、财务指标、估值分析、风险提示。' },
       { label: '税务筹划建议', text: '针对一家年营收5000万的中小企业，给出合理的税务筹划方案，重点考虑研发费用加计扣除。' },
     ]},
-  { id: 'personal', name: '生活助手', icon: 'sun', color: '#0FC6C2', desc: '个人生活、学习规划',
+  { id: 'personal', name: '生活助手', icon: 'sun', color: '#0FC6C2', desc: '个人生活、学习规划', keywords: ['生活', '学习', '旅行', '攻略', '健康', '饮食', '运动', '健身', '计划', '规划', '安排', '食谱', '减肥', '建议', '个人'],
     systemPrompt: '【场景：生活学习助手】你是一个贴心的个人生活顾问。回复要实用、具体、可执行。',
     prompts: [
       { label: '制定学习计划', text: '帮我制定一门Python数据分析的学习计划，每周8小时，12周完成，包括学习内容和实践项目。' },
@@ -300,1034 +113,21 @@ const sceneData: SceneItem[] = [
     ]},
 ]
 
-function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8) }
-const api = () => window.electronAPI
-
-function permToNumber(perm: PermissionLevel): number {
-  return perm === 'full' ? 5 : 3  // default=L3, full=L5 (all tools)
-}
-
-// ====== Right Panel Components ======
-
-// Outline file type icons — stroke only, no fill
-function fileIcon(ext: string): JSX.Element {
-  const s = { stroke: 'currentColor', strokeWidth: '1.2', fill: 'none', strokeLinecap: 'round', strokeLinejoin: 'round' as 'round' }
-  if (['.html', '.htm'].includes(ext)) return <svg width="14" height="14" viewBox="0 0 14 14" {...s}><path d="M2.5 1.5h5L11 5v7.5a.5.5 0 01-.5.5h-8a.5.5 0 01-.5-.5v-11z"/><path d="M7.5 1.5v4h4"/><path d="M4 9l1 2 1-4 1 3 1-3"/></svg>
-  if (['.md'].includes(ext)) return <svg width="14" height="14" viewBox="0 0 14 14" {...s}><path d="M2.5 1.5h5L11 5v7.5a.5.5 0 01-.5.5h-8a.5.5 0 01-.5-.5v-11z"/><path d="M7.5 1.5v4h4"/><path d="M5 8h4M5 10h3"/></svg>
-  if (['.docx'].includes(ext)) return <svg width="14" height="14" viewBox="0 0 14 14" {...s}><path d="M2.5 1.5h5L11 5v7.5a.5.5 0 01-.5.5h-8a.5.5 0 01-.5-.5v-11z"/><path d="M7.5 1.5v4h4"/><path d="M5 8h4M5 10h3"/></svg>
-  if (['.pptx'].includes(ext)) return <svg width="14" height="14" viewBox="0 0 14 14" {...s}><path d="M2.5 1.5h5L11 5v7.5a.5.5 0 01-.5.5h-8a.5.5 0 01-.5-.5v-11z"/><path d="M7.5 1.5v4h4"/><rect x="5" y="8" width="4" height="3" rx="0.5"/></svg>
-  if (['.csv', '.xlsx'].includes(ext)) return <svg width="14" height="14" viewBox="0 0 14 14" {...s}><path d="M2.5 1.5h5L11 5v7.5a.5.5 0 01-.5.5h-8a.5.5 0 01-.5-.5v-11z"/><path d="M7.5 1.5v4h4"/><rect x="4" y="7.5" width="6" height="4.5" rx="0.5"/></svg>
-  if (['.txt'].includes(ext)) return <svg width="14" height="14" viewBox="0 0 14 14" {...s}><path d="M2.5 1.5h5L11 5v7.5a.5.5 0 01-.5.5h-8a.5.5 0 01-.5-.5v-11z"/><path d="M7.5 1.5v4h4"/><path d="M5 8h4M5 10h2"/></svg>
-  return <svg width="14" height="14" viewBox="0 0 14 14" {...s}><path d="M2.5 1.5h5L11 5v7.5a.5.5 0 01-.5.5h-8a.5.5 0 01-.5-.5v-11z"/><path d="M7.5 1.5v4h4"/></svg>
-}
-
-function ArtifactsPanel({ artifacts }: { artifacts: ArtifactInfo[] }) {
-  return (
-    <div className="text-xs text-[#4E5969]">
-      <div className="font-medium text-[#1D2129] mb-2">对话产物</div>
-      {artifacts.length === 0 ? (
-        <div className="text-[#C9CDD4] text-center py-8">
-          <div className="w-10 h-10 mx-auto mb-2 rounded-lg bg-[#F2F3F5] flex items-center justify-center">{iconSVG('doc')}</div>
-          开始对话后，AI 生成的产物将显示在此处
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {artifacts.map((a, i) => (
-            <div key={i}
-              onClick={() => api()?.file.open(a.path)}
-              className="bg-white rounded-lg border border-[#E5E6EB] p-2.5 cursor-pointer hover:border-[#165DFF] hover:shadow-sm transition-all group">
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="shrink-0">{fileIcon(a.type)}</span>
-                <span className="text-[11px] font-medium text-[#1D2129] truncate group-hover:text-[#165DFF]">{a.path.split(/[/\\]/).pop()}</span>
-                <span className="shrink-0 ml-auto opacity-0 group-hover:opacity-100 text-[#165DFF] text-[10px]">打开 →</span>
-              </div>
-              <div className="text-[10px] text-[#C9CDD4] mb-0.5 flex items-center gap-2">
-                <span>{new Date(a.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
-                <span className="uppercase text-[#165DFF] bg-[#E8F3FF] px-1 py-0.5 rounded text-[9px]">{a.type}</span>
-                <span className="bg-[#F2F3F5] px-1 py-0.5 rounded text-[9px]">{a.tool}</span>
-              </div>
-              <div className="text-[10px] text-[#86909C] truncate font-mono">{a.path}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function FilesPanel() {
-  const [files, setFiles] = useState<Array<{ name: string; path: string; size: number; time: string; ext: string }>>([])
-  const [dir, setDir] = useState('')
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const a = api()
-    if (a?.file) {
-      a.file.listOutputs().then(r => {
-        if (r.success && r.files) { setFiles(r.files); setDir(r.dir || '') }
-        setLoading(false)
-      }).catch(() => setLoading(false))
-    } else {
-      setLoading(false)
-    }
-    // Refresh every 5 seconds (only if API is available)
-    if (a?.file) {
-      const iv = setInterval(() => {
-        a.file.listOutputs().then(r => {
-          if (r.success && r.files) setFiles(r.files)
-        }).catch(() => {})
-      }, 5000)
-      return () => clearInterval(iv)
-    }
-  }, [])
-
-  const formatSize = (bytes: number) => {
-    if (bytes < 1024) return bytes + ' B'
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-  }
-
-  return (
-    <div className="text-xs text-[#4E5969]">
-      <div className="font-medium text-[#1D2129] mb-2">工作区文件</div>
-      {loading ? (
-        <div className="text-[#C9CDD4] text-center py-4">加载中...</div>
-      ) : files.length === 0 ? (
-        <div className="text-[#C9CDD4] text-center py-8">
-          <div className="w-10 h-10 mx-auto mb-2 rounded-lg bg-[#F2F3F5] flex items-center justify-center">{iconSVG('data')}</div>
-          暂无生成的文件
-          {dir && <div className="mt-1 text-[10px] text-[#C9CDD4]">{dir}</div>}
-        </div>
-      ) : (
-        <div>
-          {dir && <div className="text-[10px] text-[#C9CDD4] mb-2 truncate font-mono" title={dir}>📁 {dir}</div>}
-          <div className="space-y-1">
-            {files.map((f, i) => (
-              <div key={i}
-                onClick={() => api()?.file.open(f.path)}
-                className="bg-white rounded-lg border border-[#E5E6EB] p-2 cursor-pointer hover:border-[#165DFF] hover:shadow-sm transition-all group">
-                <div className="flex items-center gap-2">
-                  <span className="shrink-0">{fileIcon(f.ext)}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[11px] font-medium text-[#1D2129] truncate group-hover:text-[#165DFF]">{f.name}</div>
-                    <div className="text-[10px] text-[#C9CDD4] flex gap-1.5">
-                      <span>{formatSize(f.size)}</span>
-                      <span>{new Date(f.time).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}</span>
-                    </div>
-                  </div>
-                  <span className="shrink-0 opacity-0 group-hover:opacity-100 text-[#165DFF] text-[10px]">打开</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function ChangesPanel({ msgs }: { msgs: Array<{ id: string; role: string; content: string; time: string }> }) {
-  const toolMsgs = msgs.filter(m => m.role === 'tool')
-  return (
-    <div className="text-xs text-[#4E5969]">
-      <div className="font-medium text-[#1D2129] mb-2">操作历史</div>
-      {toolMsgs.length === 0 ? (
-        <div className="text-[#C9CDD4] text-center py-8">
-          <div className="w-10 h-10 mx-auto mb-2 rounded-lg bg-[#F2F3F5] flex items-center justify-center">{iconSVG('clock')}</div>
-          工具操作将在此显示
-        </div>
-      ) : (
-        <div className="space-y-1.5">
-          {toolMsgs.map((m, i) => {
-            const nm = m.content.match(/Tool "(\w+)" result/)
-            const toolName = nm ? nm[1] : 'tool'
-            const isError = m.content.includes('失败') || m.content.includes('错误')
-            const content = m.content.replace(/^Tool "\w+" result:\s*/m, '').trim()
-            const shortContent = content.length > 80 ? content.slice(0, 80) + '...' : content
-            const isFileCreate = /(?:已写入|已创建|已生成)/.test(content)
-            return (
-              <div key={i} className="bg-white rounded-lg border border-[#E5E6EB] p-2">
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isError ? 'bg-[#EC5B56]' : isFileCreate ? 'bg-[#165DFF]' : 'bg-[#61C454]'}`}></span>
-                  <span className="text-[11px] font-medium text-[#1D2129] truncate">{toolName}</span>
-                  <span className="text-[10px] text-[#C9CDD4] ml-auto shrink-0">
-                    {new Date(m.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                  </span>
-                </div>
-                <div className={`text-[10px] leading-relaxed mt-0.5 ${isError ? 'text-[#EC5B56]' : isFileCreate ? 'text-[#165DFF]' : 'text-[#86909C]'}`}>
-                  {shortContent}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function PreviewPanel({ msgs, artifacts }: { msgs: Array<{ id: string; role: string; content: string; time: string }>; artifacts: ArtifactInfo[] }) {
-  const [previewContent, setPreviewContent] = useState<string>('')
-  const [previewType, setPreviewType] = useState<string>('')
-  const [previewTitle, setPreviewTitle] = useState<string>('')
-
-  // Find previewable content: 1) HTML in messages 2) Latest HTML/MD artifact
-  useEffect(() => {
-    // Check messages for HTML
-    const lastAssistant = [...msgs].reverse().find(m => m.role === 'assistant')
-    if (lastAssistant) {
-      // Check for HTML in code blocks
-      const htmlMatch = lastAssistant.content.match(/```(?:html)?\s*([\s\S]*?)```/)
-      if (htmlMatch && /<html|<body|<div|<head|<!DOCTYPE/i.test(htmlMatch[1])) {
-        setPreviewContent(htmlMatch[1])
-        setPreviewType('html')
-        setPreviewTitle('对话 HTML')
-        return
-      }
-      // Check for raw HTML in message
-      if (lastAssistant.content.includes('<html') || lastAssistant.content.includes('<!DOCTYPE html')) {
-        const start = lastAssistant.content.indexOf('<')
-        setPreviewContent(lastAssistant.content.slice(start))
-        setPreviewType('html')
-        setPreviewTitle('对话 HTML')
-        return
-      }
-    }
-
-    // Check latest HTML artifact
-    const htmlArtifact = [...artifacts].reverse().find(a => a.type === 'html')
-    if (htmlArtifact) {
-      // Try to read the file
-      const a = api()
-      if (a?.file) {
-        a.file.read(htmlArtifact.path).then(r => {
-          if (r.success && r.content) {
-            setPreviewContent(r.content)
-            setPreviewType('html')
-            setPreviewTitle(htmlArtifact.path.split(/[/\\]/).pop() || 'Preview')
-          }
-        }).catch(() => {})
-        return
-      }
-    }
-
-    // Check latest MD artifact
-    const mdArtifact = [...artifacts].reverse().find(a => a.type === 'md')
-    if (mdArtifact) {
-      const a = api()
-      if (a?.file) {
-        a.file.read(mdArtifact.path).then(r => {
-          if (r.success && r.content) {
-            setPreviewContent(r.content)
-            setPreviewType('markdown')
-            setPreviewTitle(mdArtifact.path.split(/[/\\]/).pop() || 'Preview')
-          }
-        }).catch(() => {})
-        return
-      }
-    }
-
-    // Nothing to preview
-    setPreviewContent('')
-    setPreviewType('')
-    setPreviewTitle('')
-  }, [msgs, artifacts])
-
-  if (!previewContent) {
-    return (
-      <div className="text-xs h-full flex flex-col">
-        <div className="font-medium text-[#1D2129] mb-2 shrink-0">预览</div>
-        <div className="flex-1 flex items-center justify-center text-[#C9CDD4] text-center">
-          <div>
-            <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-[#F2F3F5] flex items-center justify-center">{iconSVG('chart')}</div>
-            <div className="mb-1">生成 HTML 或 Markdown 文件后可在此预览</div>
-            <div className="text-[10px]">对话中创建的网页和文档会自动显示</div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  if (previewType === 'html') {
-    return (
-      <div className="text-xs h-full flex flex-col">
-        <div className="flex items-center justify-between mb-2 shrink-0">
-          <div className="font-medium text-[#1D2129] truncate flex-1">{previewTitle}</div>
-          <button onClick={() => setPreviewContent('')}
-            className="text-[10px] text-[#86909C] hover:text-[#EC5B56] shrink-0 ml-2">✕</button>
-        </div>
-        <iframe srcDoc={previewContent}
-          className="flex-1 w-full border border-[#E5E6EB] rounded-lg bg-white"
-          sandbox="allow-scripts allow-same-origin" title="Preview" />
-      </div>
-    )
-  }
-
-  if (previewType === 'markdown') {
-    return (
-      <div className="text-xs h-full flex flex-col">
-        <div className="flex items-center justify-between mb-2 shrink-0">
-          <div className="font-medium text-[#1D2129] truncate flex-1">{previewTitle}</div>
-          <button onClick={() => setPreviewContent('')}
-            className="text-[10px] text-[#86909C] hover:text-[#EC5B56] shrink-0 ml-2">✕</button>
-        </div>
-        <div className="flex-1 overflow-y-auto bg-white border border-[#E5E6EB] rounded-lg p-3">
-          <FormattedContent content={previewContent} />
-        </div>
-      </div>
-    )
-  }
-
-  // Text preview
-  return (
-    <div className="text-xs h-full flex flex-col">
-      <div className="flex items-center justify-between mb-2 shrink-0">
-        <div className="font-medium text-[#1D2129] truncate flex-1">{previewTitle}</div>
-        <button onClick={() => setPreviewContent('')}
-          className="text-[10px] text-[#86909C] hover:text-[#EC5B56] shrink-0 ml-2">✕</button>
-      </div>
-      <div className="flex-1 overflow-y-auto bg-white border border-[#E5E6EB] rounded-lg p-3">
-        <pre className="text-[11px] text-[#4E5969] font-mono whitespace-pre-wrap">{previewContent.slice(0, 5000)}</pre>
-      </div>
-    </div>
-  )
-}
-
-// ====== View Panels ======
-
-function SkillsView() {
-  const [skills, setSkills] = useState<SkillInfo[]>([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const a = api()
-    if (a?.skills) {
-      a.skills.list().then(list => { setSkills(list); setLoading(false) }).catch(() => setLoading(false))
-    } else {
-      // Dev mode / no Electron: show sample data
-      setSkills([
-        { name: 'code-review-checklist', description: '系统性代码审查检查清单，逐项排查常见但容易被遗漏的 bug', type: 'skill', triggers: ['检查代码', '代码审查', 'review'] },
-        { name: 'idea', description: '想法完善引导，通过顾问式提问帮助将模糊想法变成可执行方案文档', type: 'skill', triggers: ['想法', 'idea', '规划'] },
-        { name: 'fullstack-dev', description: '全栈后端架构和前后端集成指南，REST API + 前端', type: 'skill' },
-        { name: 'agent-browser', description: '浏览器自动化操作：网页截图、表单填写、数据抓取', type: 'skill', triggers: ['浏览器', '截图', '抓取'] },
-        { name: 'hello_world', description: '一个示例插件，返回问候语', type: 'tool' },
-      ])
-      setLoading(false)
-    }
-  }, [])
-
-  const handleSkillClick = (skill: SkillInfo) => {
-    // In full Electron, this would trigger the skill via IPC
-    // For now, navigate and suggest in chat
-    const a = api()
-    if (!a) return
-    // TODO: implement skill invocation
-  }
-
-  if (loading) {
-    return <div className="p-6"><div className="max-w-4xl mx-auto text-center py-12 text-sm text-[#C9CDD4]">加载中...</div></div>
-  }
-
-  return (
-    <div className="p-6 overflow-y-auto">
-      <div className="max-w-4xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h2 className="text-lg font-semibold text-[#1D2129]">技能</h2>
-            <p className="text-sm text-[#86909C] mt-0.5">已安装的技能和工具，点击启动。</p>
-          </div>
-          <button
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#E5E6EB] text-sm text-[#4E5969] hover:bg-[#F7F8FA] transition-colors">
-            {iconSVG('plus')}<span>安装技能</span>
-          </button>
-        </div>
-
-        {skills.length === 0 ? (
-          <div className="text-center py-12 text-sm text-[#C9CDD4]">
-            <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-[#F7F8FA] flex items-center justify-center">{iconSVG('plugin')}</div>
-            还没有安装技能，点击"安装技能"添加你的第一个技能
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-3">
-            {skills.map((skill, i) => (
-              <div key={i} onClick={() => handleSkillClick(skill)}
-                className="border border-[#F2F3F5] rounded-lg p-4 cursor-pointer hover:border-[#165DFF] hover:shadow-sm transition-all group bg-white">
-                <div className="flex items-start gap-3">
-                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors ${skill.type === 'tool' ? 'bg-[#FFF7E6] text-[#D4A017]' : 'bg-[#F7F8FA] text-[#4E5969] group-hover:bg-[#E8F3FF] group-hover:text-[#165DFF]'}`}>
-                    {skill.type === 'tool' ? iconSVG('gear') : iconSVG('doc')}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-[#1D2129] mb-0.5 truncate">{skill.name}</div>
-                    <div className="text-xs text-[#86909C] leading-relaxed line-clamp-2">{skill.description}</div>
-                    {skill.triggers && skill.triggers.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {skill.triggers.map(t => (
-                          <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-[#F2F3F5] text-[#86909C]">{t}</span>
-                        ))}
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2 mt-2">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${skill.type === 'tool' ? 'bg-[#FFF7E6] text-[#D4A017]' : 'bg-[#E8F3FF] text-[#165DFF]'}`}>
-                        {skill.type === 'tool' ? '工具' : '技能'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function ConnectorsView() {
-  const [statusMap, setStatusMap] = useState<Record<string, string>>({})
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [formValues, setFormValues] = useState<Record<string, string>>({})
-  const [connecting, setConnecting] = useState<string | null>(null)
-  const [errors, setErrors] = useState<Record<string, string>>({})
-  const [savedConfigs, setSavedConfigs] = useState<Set<string>>(new Set())
-  const [showAdvanced, setShowAdvanced] = useState(false)
-
-  interface PresetConnector {
-    id: string; name: string; desc: string; icon: string; color: string
-    cmd?: string; args?: string
-    builtin?: boolean
-    authLabel?: string; authPlaceholder?: string; authHelp?: string; authUrl?: string
-    authFields?: Array<{ key: string; label: string; placeholder: string; type?: string }>
-    envKey?: string
-  }
-
-  const presetConnectors: PresetConnector[] = [
-    { id: 'local-system', name: '本地系统', desc: '系统诊断与管理', icon: 'gear', color: '#165DFF', builtin: true },
-    { id: 'github', name: 'GitHub', desc: '管理仓库、Issue、PR', icon: 'code', color: '#24292F', cmd: 'node', args: 'github-mcp-server.js',
-      envKey: 'GITHUB_PERSONAL_ACCESS_TOKEN', authLabel: 'Personal Access Token', authPlaceholder: 'ghp_xxxxxxxxxx',
-      authHelp: 'github.com → Settings → Developer settings → Personal access tokens → Generate new token (classic) → 勾选 repo、workflow',
-      authUrl: 'https://github.com/settings/tokens/new?scopes=repo,workflow&description=CoreBuddy' },
-    { id: 'feishu', name: '飞书', desc: '文档、消息、日历、审批', icon: 'connector', color: '#3370FF', cmd: 'node', args: 'feishu-mcp-server.js',
-      authFields: [
-        { key: 'FEISHU_APP_ID', label: 'App ID', placeholder: 'cli_xxxxxxxxxxxx' },
-        { key: 'FEISHU_APP_SECRET', label: 'App Secret', placeholder: '••••••••••••', type: 'password' },
-      ],
-      authHelp: '打开 open.feishu.cn → 创建企业自建应用 → 凭证与基础信息', authUrl: 'https://open.feishu.cn/app' },
-    { id: 'wecom', name: '企业微信', desc: '消息收发、机器人推送', icon: 'chat', color: '#07C160', cmd: 'uvx', args: 'wecom-bot-mcp-server',
-      envKey: 'WECOM_WEBHOOK_URL', authLabel: 'Webhook 地址', authPlaceholder: 'https://qyapi.weixin.qq.com/...',
-      authHelp: '企业微信群 → 群机器人 → 复制 Webhook 地址' },
-    { id: 'tencent-docs', name: '腾讯文档', desc: '在线文档和表格', icon: 'doc', color: '#165DFF', cmd: 'npx', args: '-y @anthropic/mcp-server-tencent-docs',
-      envKey: 'TENCENT_DOCS_COOKIE', authLabel: 'Cookie', authPlaceholder: '从浏览器控制台复制',
-      authHelp: '登录 docs.qq.com → F12 → Application → Cookies → 复制 Cookie', authUrl: 'https://docs.qq.com' },
-    { id: 'dingtalk', name: '钉钉', desc: '消息通知、审批、考勤', icon: 'bell', color: '#0089FF', cmd: 'npx', args: '-y @anthropic/mcp-server-dingtalk',
-      authFields: [
-        { key: 'DINGTALK_APP_KEY', label: 'AppKey', placeholder: 'dingxxxxxxxxxxxx' },
-        { key: 'DINGTALK_APP_SECRET', label: 'AppSecret', placeholder: '••••••••••••', type: 'password' },
-      ],
-      authHelp: 'open.dingtalk.com → 创建应用 → 复制 AppKey/AppSecret', authUrl: 'https://open.dingtalk.com' },
-    { id: 'qq-mail', name: 'QQ邮箱', desc: '收发邮件、搜索', icon: 'mail', color: '#FE6F41', cmd: 'npx', args: '-y @anthropic/mcp-server-qqmail',
-      authFields: [
-        { key: 'QQMAIL_ACCOUNT', label: '邮箱账号', placeholder: 'xxx@qq.com' },
-        { key: 'QQMAIL_AUTH_CODE', label: '授权码', placeholder: '16位授权码', type: 'password' },
-      ],
-      authHelp: 'QQ邮箱 → 设置 → 账户 → POP3/IMAP/SMTP → 生成授权码', authUrl: 'https://mail.qq.com' },
-    { id: 'netease-mail', name: '网易邮箱', desc: '163/126 邮箱收发', icon: 'mail', color: '#D32F2F', cmd: 'npx', args: '-y @anthropic/mcp-server-netease-mail',
-      authFields: [
-        { key: 'NETEASE_ACCOUNT', label: '邮箱账号', placeholder: 'xxx@163.com' },
-        { key: 'NETEASE_AUTH_CODE', label: '授权码', placeholder: '16位授权码', type: 'password' },
-      ],
-      authHelp: '网易邮箱 → 设置 → POP3/SMTP/IMAP → 新增授权码', authUrl: 'https://mail.163.com' },
-  ]
-
-  const refresh = () => {
-    const a = api()
-    if (!a?.mcp) return
-    a.mcp.status().then(s => setStatusMap(s as any)).catch(() => {})
-    a.mcp.list().then(cfg => {
-      if (cfg?.servers) setSavedConfigs(new Set(Object.keys(cfg.servers)))
-    }).catch(() => {})
-  }
-
-  useEffect(() => { refresh() }, [])
-
-  // ── Inline form connect ──
-  const handleInlineConnect = async (c: PresetConnector) => {
-    const a = api()
-    if (!a?.mcp) return
-    setConnecting(c.id)
-
-    const env: Record<string, string> = {}
-    if (c.authFields) {
-      for (const f of c.authFields) {
-        if (formValues[f.key]) env[f.key] = formValues[f.key]
-      }
-    } else if (c.envKey) {
-      env[c.envKey] = formValues['_token'] || ''
-    }
-
-    try {
-      await a.mcp.save(c.id, {
-        command: c.cmd || '',
-        args: c.args ? c.args.split(/\s+/) : [],
-        env: Object.keys(env).length ? env : undefined,
-        enabled: true,
-        connect: true,
-      })
-      setExpandedId(null)
-      setFormValues({})
-      // Keep spinner visible at least 600ms
-      await new Promise(r => setTimeout(r, 600))
-      setConnecting(null)
-      setTimeout(refresh, 2000)
-    } catch (e: any) {
-      setConnecting(null)
-      setErrors(prev => ({ ...prev, [c.id]: e?.message || '连接失败，请检查密钥' }))
-      setTimeout(() => setErrors(prev => { const n = { ...prev }; delete n[c.id]; return n }), 5000)
-    }
-  }
-
-  const handleConnectClick = (c: PresetConnector) => {
-    if (c.builtin) return
-    setExpandedId(prev => prev === c.id ? null : c.id)
-    setFormValues({})
-  }
-
-  const handleDisconnect = async (id: string) => {
-    const a = api()
-    if (!a?.mcp) return
-    try {
-      await a.mcp.disconnect(id)
-      setStatusMap(prev => ({ ...prev, [id]: 'disconnected' }))
-    } catch (e: any) {
-      setErrors(prev => ({ ...prev, [id]: e?.message || '断开失败' }))
-      setTimeout(() => setErrors(prev => { const n = { ...prev }; delete n[id]; return n }), 5000)
-    }
-    // Config stays saved — keys preserved
-  }
-
-  const handleReconnect = async (c: PresetConnector) => {
-    const a = api()
-    if (!a?.mcp) return
-    setConnecting(c.id)
-    try {
-      await a.mcp.reconnect(c.id)
-      // Keep spinner visible at least 600ms so user sees feedback
-      await new Promise(r => setTimeout(r, 600))
-      setConnecting(null)
-      setTimeout(refresh, 2000)
-    } catch (e: any) {
-      setConnecting(null)
-      setErrors(prev => ({ ...prev, [c.id]: e?.message || '重连失败' }))
-      setTimeout(() => setErrors(prev => { const n = { ...prev }; delete n[c.id]; return n }), 5000)
-    }
-  }
-
-  const hasSaved = (c: PresetConnector) => savedConfigs.has(c.id)
-
-  const isConnected = (c: PresetConnector) => c.builtin || statusMap[c.id] === 'connected' || statusMap[c.id] === 'builtin'
-
-  return (
-    <div className="p-8 overflow-y-auto">
-      <div className="max-w-3xl mx-auto">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h2 className="text-lg font-semibold text-[#1D2129] mb-1">连接器</h2>
-            <p className="text-sm text-[#86909C]">连接外部服务，扩展 CoreBuddy 的能力。</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={async () => {
-              if (!confirm('导出文件将包含密钥，请妥善保管。确定导出？')) return
-              try {
-                const r = await api()?.mcp?.exportConfig()
-                if (r?.success) alert('配置已导出')
-              } catch (e: any) { alert('导出失败: ' + (e?.message || '未知错误')) }
-            }}
-              className="text-xs px-3 py-1.5 rounded-lg border border-[#E5E6EB] text-[#4E5969] hover:bg-[#F7F8FA] transition-colors">
-              导出配置
-            </button>
-            <button onClick={async () => {
-              if (!confirm('导入将覆盖当前连接器配置，确定继续？')) return
-              try {
-                const r = await api()?.mcp?.importConfig()
-                if (r?.success) { alert('配置已导入，正在连接...'); setTimeout(refresh, 2000) }
-                else if (r?.error) alert(r.error)
-              } catch (e: any) { alert('导入失败: ' + (e?.message || '未知错误')) }
-            }}
-              className="text-xs px-3 py-1.5 rounded-lg bg-[#165DFF] text-white hover:bg-[#0E4BD8] transition-colors font-medium">
-              导入配置
-            </button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          {presetConnectors.map(c => {
-            const connected = isConnected(c)
-            const expanded = expandedId === c.id
-            const isConnecting = connecting === c.id
-            return (
-            <div key={c.id}
-              className={`rounded-xl border p-5 bg-white transition-all ${connected ? 'border-[#DCECDB]' : 'border-[#E5E6EB]'} ${expanded ? 'shadow-md' : ''}`}>
-              <div className="flex items-start gap-3 mb-3">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: `${c.color}14` }}>
-                  <span style={{ color: c.color }}>{iconSVG(c.icon)}</span>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-[#1D2129]">{c.name}</span>
-                    {connected && <span className="w-1.5 h-1.5 rounded-full bg-[#61C454] shrink-0" />}
-                    {!connected && !c.builtin && <span className="w-1.5 h-1.5 rounded-full bg-[#E5E6EB] shrink-0" />}
-                  </div>
-                  <div className="text-xs text-[#86909C] mt-0.5 leading-relaxed">{c.desc}</div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {c.builtin ? (
-                  <span className="text-xs px-3 py-1.5 rounded-lg border border-[#DCECDB] text-[#61C454] cursor-default">
-                    已就绪
-                  </span>
-                ) : connected ? (
-                  <>
-                    {/* Toggle switch */}
-                    <button onClick={() => handleDisconnect(c.id)}
-                      className="relative w-9 h-5 rounded-full transition-colors bg-[#61C454]"
-                      title="点击关闭连接">
-                      <span className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-all" />
-                    </button>
-                    <button onClick={() => handleDisconnect(c.id)}
-                      className="text-xs px-2 py-1 rounded-lg text-[#86909C] hover:text-[#EC5B56] hover:bg-[#FCEBEB] transition-colors">
-                      断开
-                    </button>
-                  </>
-                ) : hasSaved(c) ? (
-                  <>
-                    <button onClick={() => handleReconnect(c)} disabled={isConnecting}
-                      className="text-xs px-3 py-1.5 rounded-lg bg-[#165DFF] text-white hover:bg-[#0E4BD8] transition-colors font-medium disabled:opacity-50 flex items-center gap-1.5">
-                      {isConnecting ? <><svg className="animate-spin" width="12" height="12" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeOpacity="0.3" strokeWidth="1.5"/><path d="M7 1.5a5.5 5.5 0 014.89 3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>连接中...</> : '重新连接'}
-                    </button>
-                    <span className="text-[11px] text-[#C9CDD4]">密钥已保存</span>
-                  </>
-                ) : (
-                  <>
-                    <button onClick={() => handleConnectClick(c)} disabled={isConnecting}
-                      className="text-xs px-3 py-1.5 rounded-lg bg-[#165DFF] text-white hover:bg-[#0E4BD8] transition-colors font-medium disabled:opacity-50 flex items-center gap-1.5">
-                      {isConnecting ? <><svg className="animate-spin" width="12" height="12" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeOpacity="0.3" strokeWidth="1.5"/><path d="M7 1.5a5.5 5.5 0 014.89 3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>连接中...</> : '连接'}
-                    </button>
-                    {c.authUrl && (
-                      <button onClick={() => api()?.openExternal(c.authUrl!)}
-                        className="text-xs px-2 py-1.5 rounded-lg text-[#86909C] hover:text-[#165DFF] hover:bg-[#F2F3F5] transition-colors">
-                        获取密钥 ↗
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-
-              {/* Error display */}
-              {errors[c.id] && (
-                <div className="mt-3 text-xs text-[#E24B4A] bg-[#FCEBEB] rounded-lg px-3 py-2">
-                  {errors[c.id]}
-                </div>
-              )}
-
-              {/* Inline form — slides open when user clicks "连接" */}
-              {expanded && !connected && (
-                <div className="mt-4 pt-4 border-t border-[#F2F3F5] space-y-3">
-                  {c.authHelp && (
-                    <div className="text-[11px] text-[#86909C] leading-relaxed bg-[#F7F8FA] rounded-lg p-2.5">
-                      {c.authHelp}
-                    </div>
-                  )}
-
-                  {c.authFields ? (
-                    c.authFields.map(f => (
-                      <div key={f.key}>
-                        <label className="text-[11px] font-medium text-[#4E5969] mb-1 block">{f.label}</label>
-                        <input type={f.type || 'text'} placeholder={f.placeholder}
-                          value={formValues[f.key] || ''}
-                          onChange={e => setFormValues(prev => ({ ...prev, [f.key]: e.target.value }))}
-                          onKeyDown={e => { if (e.key === 'Enter') handleInlineConnect(c) }}
-                          autoFocus={c.authFields.indexOf(f) === 0}
-                          className="w-full h-9 px-3 rounded-lg border border-[#E5E6EB] text-[13px] outline-none focus:border-[#165DFF] placeholder:text-[#C9CDD4]" />
-                      </div>
-                    ))
-                  ) : (
-                    <div>
-                      <label className="text-[11px] font-medium text-[#4E5969] mb-1 block">{c.authLabel || '密钥'}</label>
-                      <input type="password" placeholder={c.authPlaceholder}
-                        value={formValues['_token'] || ''}
-                        onChange={e => setFormValues(prev => ({ ...prev, _token: e.target.value }))}
-                        onKeyDown={e => { if (e.key === 'Enter') handleInlineConnect(c) }}
-                        autoFocus
-                        className="w-full h-9 px-3 rounded-lg border border-[#E5E6EB] text-[13px] outline-none focus:border-[#165DFF] placeholder:text-[#C9CDD4]" />
-                    </div>
-                  )}
-
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => setExpandedId(null)}
-                      className="flex-1 h-9 rounded-lg border border-[#E5E6EB] text-[12px] text-[#86909C] hover:bg-[#F7F8FA] transition-colors">取消</button>
-                    <button onClick={() => handleInlineConnect(c)} disabled={isConnecting}
-                      className="flex-1 h-9 rounded-lg bg-[#165DFF] text-white text-[12px] font-medium hover:bg-[#0E4BD8] transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
-                      {isConnecting ? <><svg className="animate-spin" width="12" height="12" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeOpacity="0.3" strokeWidth="1.5"/><path d="M7 1.5a5.5 5.5 0 014.89 3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>连接中...</> : '确认连接'}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )})}
-        </div>
-
-        {/* Advanced MCP Config */}
-        <div className="mt-6">
-          <button onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-1 text-xs text-[#C9CDD4] hover:text-[#86909C] transition-colors">
-            <span>{showAdvanced ? '▾' : '▸'}</span> 高级 MCP 配置
-          </button>
-          {showAdvanced && (
-            <div className="mt-3 p-4 rounded-xl bg-[#F7F8FA] border border-[#F2F3F5]">
-              <p className="text-xs text-[#86909C] mb-3">
-                配置文件路径：<code className="text-[#165DFF] bg-[#E8F3FF] px-1.5 py-0.5 rounded text-[11px]">corebuddy-mcp.json</code>
-              </p>
-              <pre className="text-[11px] text-[#4E5969] bg-white border border-[#E5E6EB] rounded-lg p-3 overflow-x-auto">
-{`{
-  "servers": {
-    "my-server": {
-      "command": "node",
-      "args": ["path/to/server.js"],
-      "env": { "API_KEY": "your-key" },
-      "enabled": true
-    }
-  }
-}`}</pre>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ExpertsView() {
-  return (
-    <div className="p-6">
-      <div className="max-w-3xl mx-auto">
-        <h2 className="text-lg font-semibold text-[#1D2129] mb-1">专家中心</h2>
-        <p className="text-sm text-[#86909C] mb-6">为不同领域的任务选择专业 AI 专家，获得更精准的帮助。</p>
-        <div className="text-center py-12 text-sm text-[#C9CDD4]">
-          <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-[#F7F8FA] flex items-center justify-center">{iconSVG('expert')}</div>
-          专家中心即将上线，敬请期待
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function AutomationsView() {
-  const [showAdd, setShowAdd] = useState(false)
-  const [form, setForm] = useState({ name: '', prompt: '', cwd: '', frequency: 'daily' as 'daily'|'hourly'|'weekly'|'once', hour: '09', minute: '00', weekDay: '1', validFrom: '', validUntil: '', notify: true, tools: 'auto', connector: '' })
-  const [items, setItems] = useState<Array<{ id: string; name: string; prompt: string; frequency: string; time: string; active: boolean }>>([])
-
-  const templateCards = [
-    { icon: 'sun', title: '每日晨报', desc: '每天早上 8:00 自动汇总新闻、天气和日程', prompt: '帮我汇总今天的：1. 重要新闻；2. 天气；3. 今天的日程安排。生成一份简洁的晨报。', freq: 'daily', time: '08:00' },
-    { icon: 'data', title: '项目进度报告', desc: '每周一自动生成上周项目进度汇总', prompt: '分析项目文件变更和任务状态，生成上周的项目进度报告。包括：完成的任务、进行中的任务、风险和阻塞项。', freq: 'weekly', time: '09:00' },
-    { icon: 'code', title: '代码审查提醒', desc: '每工作日检查待审查的 PR 并发送提醒', prompt: '检查所有仓库中等待审查的 Pull Request，汇总清单并发送提醒。', freq: 'daily', time: '10:00' },
-    { icon: 'mail', title: '邮件摘要', desc: '每小时检查新邮件并生成摘要', prompt: '检查未读邮件，筛选重要邮件，生成一句话摘要列表。', freq: 'hourly', time: '每整点' },
-  ]
-
-  const reset = () => setForm({ name: '', prompt: '', cwd: '', frequency: 'daily', hour: '09', minute: '00', weekDay: '1', validFrom: '', validUntil: '', notify: true, tools: 'auto', connector: '' })
-
-  const addItem = () => {
-    if (!form.name.trim() || !form.prompt.trim()) return
-    const timeStr = form.frequency === 'hourly' ? '每整点' : form.frequency === 'once' ? '单次执行' : form.frequency === 'weekly' ? `每周${['','一','二','三','四','五','六','日'][Number(form.weekDay)]} ${form.hour}:${form.minute}` : `每天 ${form.hour}:${form.minute}`
-    setItems(prev => [{ id: Date.now().toString(36), name: form.name, prompt: form.prompt, frequency: form.frequency === 'hourly' ? '每小时' : form.frequency === 'weekly' ? '每周' : form.frequency === 'once' ? '单次' : '每天', time: timeStr, active: true }, ...prev])
-    reset(); setShowAdd(false)
-  }
-
-  return (
-    <div className="p-6 overflow-y-auto">
-      <div className="max-w-4xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h2 className="text-lg font-semibold text-[#1D2129]">自动化</h2>
-            <p className="text-sm text-[#86909C] mt-0.5">设置定时任务，让 CoreBuddy 按计划自动执行工作。</p>
-          </div>
-          <button onClick={() => setShowAdd(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#165DFF] hover:bg-[#0E4BD8] text-white text-sm font-medium transition-colors">
-            {iconSVG('plus')}<span>添加自动化</span>
-          </button>
-        </div>
-
-        {/* Template Cards */}
-        {items.length === 0 && (
-          <>
-            <div className="text-sm font-medium text-[#4E5969] mb-3">参考案例</div>
-            <div className="grid grid-cols-2 gap-3 mb-8">
-              {templateCards.map((t, i) => (
-                <div key={i} onClick={() => {
-                  const isHourly = t.freq === 'hourly'
-                  setForm({ ...form, name: t.title, prompt: t.prompt, frequency: t.freq as any,
-                    hour: isHourly ? '00' : t.time.split(':')[0],
-                    minute: isHourly ? '00' : (t.time.includes(':') ? t.time.split(':')[1] : '00')
-                  })
-                  setShowAdd(true)
-                }}
-                  className="border border-[#F2F3F5] rounded-lg p-4 cursor-pointer hover:border-[#165DFF] hover:shadow-sm transition-all group bg-white">
-                  <div className="flex items-start gap-3">
-                    <div className="w-9 h-9 rounded-lg bg-[#F7F8FA] flex items-center justify-center shrink-0 text-[#4E5969] group-hover:text-[#165DFF] group-hover:bg-[#E8F3FF] transition-colors">{iconSVG(t.icon)}</div>
-                    <div>
-                      <div className="text-sm font-medium text-[#1D2129] mb-0.5">{t.title}</div>
-                      <div className="text-xs text-[#86909C] leading-relaxed">{t.desc}</div>
-                      <div className="flex items-center gap-2 mt-2">
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#F2F3F5] text-[#86909C]">{t.time}</span>
-                        <span className="text-[10px] text-[#C9CDD4]">{t.freq === 'weekly' ? '每周' : t.freq === 'hourly' ? '每小时' : '每天'}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {/* Existing Items */}
-        {items.length > 0 && (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-sm font-medium text-[#4E5969]">我的自动化 ({items.length})</div>
-              <button onClick={() => setShowAdd(true)}
-                className="flex items-center gap-1 text-xs text-[#165DFF] hover:underline">
-                {iconSVG('plus')}<span>添加</span>
-              </button>
-            </div>
-            {items.map(item => (
-              <div key={item.id} className={`flex items-center gap-3 border rounded-lg p-3 bg-white transition-colors ${item.active ? 'border-[#F2F3F5]' : 'border-[#F2F3F5] bg-[#F9FAFB]'}`}>
-                <button onClick={() => setItems(prev => prev.map(it => it.id === item.id ? {...it, active: !it.active} : it))}
-                  className={`w-8 h-5 rounded-full relative transition-colors shrink-0 ${item.active ? 'bg-[#165DFF]' : 'bg-[#E5E6EB]'}`}>
-                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${item.active ? 'left-[14px]' : 'left-[2px]'}`} />
-                </button>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-[#1D2129]">{item.name}</div>
-                  <div className="text-xs text-[#86909C]">{item.frequency} · {item.time}</div>
-                </div>
-                <button onClick={() => setItems(prev => prev.filter(it => it.id !== item.id))}
-                  className="text-[#C9CDD4] hover:text-[#EC5B56] transition-colors p-1">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4 4l6 6M10 4l-6 6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {items.length === 0 && (
-          <div className="text-center py-8 text-sm text-[#C9CDD4]">
-            还没有自动化任务，点击上方按钮创建你的第一个自动化
-          </div>
-        )}
-      </div>
-
-      {/* Add Modal */}
-      {showAdd && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20" onClick={() => { setShowAdd(false); reset() }}>
-          <div className="bg-white rounded-xl shadow-2xl w-[540px] max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-            {/* Modal Header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-[#F2F3F5]">
-              <h3 className="text-base font-semibold text-[#1D2129]">添加自动化</h3>
-              <button onClick={() => { setShowAdd(false); reset() }}
-                className="w-6 h-6 rounded flex items-center justify-center text-[#86909C] hover:bg-[#F2F3F5] hover:text-[#4E5969] transition-colors">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-              </button>
-            </div>
-
-            {/* Modal Body */}
-            <div className="p-5 space-y-4">
-              {/* Name */}
-              <div>
-                <label className="text-xs font-medium text-[#4E5969] block mb-1.5">名称 <span className="text-[#EC5B56]">*</span></label>
-                <input value={form.name} onChange={e => setForm({...form, name: e.target.value})}
-                  placeholder="例如：每日晨报"
-                  className="w-full h-9 rounded-lg text-sm px-3 border border-[#E5E6EB] outline-none focus:border-[#165DFF] placeholder:text-[#C9CDD4]" />
-              </div>
-
-              {/* Workspace (optional) */}
-              <div>
-                <label className="text-xs font-medium text-[#4E5969] block mb-1.5">工作空间（可选）</label>
-                <input value={form.cwd} onChange={e => setForm({...form, cwd: e.target.value})}
-                  placeholder="选择工作空间目录"
-                  className="w-full h-9 rounded-lg text-sm px-3 border border-[#E5E6EB] outline-none focus:border-[#165DFF] placeholder:text-[#C9CDD4]" />
-              </div>
-
-              {/* Prompt */}
-              <div>
-                <label className="text-xs font-medium text-[#4E5969] block mb-1.5">提示词 <span className="text-[#EC5B56]">*</span></label>
-                <textarea value={form.prompt} onChange={e => setForm({...form, prompt: e.target.value})}
-                  placeholder="描述让 AI 执行的任务..."
-                  rows={3}
-                  className="w-full rounded-lg text-sm px-3 py-2 border border-[#E5E6EB] outline-none focus:border-[#165DFF] placeholder:text-[#C9CDD4] resize-none" />
-              </div>
-
-              {/* Tool & Expert toggle */}
-              <div className="flex items-center gap-2">
-                {[
-                  { k: 'auto', l: 'Auto', d: '自动选择' },
-                  { k: 'skills', l: '技能', d: '指定技能' },
-                  { k: 'expert', l: '召唤专家', d: '指定专家' },
-                ].map(t => (
-                  <button key={t.k} onClick={() => setForm({...form, tools: t.k})}
-                    className={`flex-1 h-9 rounded-lg text-xs font-medium border transition-colors ${form.tools === t.k ? 'border-[#165DFF] bg-[#E8F3FF] text-[#165DFF]' : 'border-[#E5E6EB] text-[#4E5969] hover:bg-[#F7F8FA]'}`}>
-                    {t.l}
-                  </button>
-                ))}
-              </div>
-
-              {/* Connector */}
-              <div>
-                <label className="text-xs font-medium text-[#4E5969] block mb-1.5">连接器</label>
-                <select value={form.connector} onChange={e => setForm({...form, connector: e.target.value})}
-                  className="w-full h-9 rounded-lg text-sm px-3 border border-[#E5E6EB] outline-none focus:border-[#165DFF] bg-white text-[#4E5969]">
-                  <option value="">选择连接器</option>
-                  <option value="feishu">飞书</option>
-                  <option value="github">GitHub</option>
-                  <option value="wecom">企业微信</option>
-                  <option value="dingtalk">钉钉</option>
-                  <option value="tencent-docs">腾讯文档</option>
-                </select>
-              </div>
-
-              {/* Frequency */}
-              <div>
-                <label className="text-xs font-medium text-[#4E5969] block mb-1.5">执行频率</label>
-                <div className="grid grid-cols-4 gap-2 mb-3">
-                  {[
-                    { k: 'daily', l: '每天' },
-                    { k: 'hourly', l: '每小时' },
-                    { k: 'weekly', l: '每周' },
-                    { k: 'once', l: '单次' },
-                  ].map(f => (
-                    <button key={f.k} onClick={() => setForm({...form, frequency: f.k as any})}
-                      className={`h-8 rounded-lg text-xs font-medium border transition-colors ${form.frequency === f.k ? 'border-[#165DFF] bg-[#E8F3FF] text-[#165DFF]' : 'border-[#E5E6EB] text-[#4E5969] hover:bg-[#F7F8FA]'}`}>
-                      {f.l}
-                    </button>
-                  ))}
-                </div>
-                {/* Time picker (not for hourly/once) */}
-                {form.frequency !== 'hourly' && form.frequency !== 'once' && (
-                  <div className="flex items-center gap-2">
-                    {form.frequency === 'weekly' && (
-                      <select value={form.weekDay} onChange={e => setForm({...form, weekDay: e.target.value})}
-                        className="h-8 rounded-lg text-xs px-2 border border-[#E5E6EB] outline-none focus:border-[#165DFF] bg-white text-[#4E5969]">
-                        {['一','二','三','四','五','六','日'].map((d,i) => <option key={i} value={String(i+1)}>周{d}</option>)}
-                      </select>
-                    )}
-                    <select value={form.hour} onChange={e => setForm({...form, hour: e.target.value})}
-                      className="h-8 rounded-lg text-xs px-2 border border-[#E5E6EB] outline-none focus:border-[#165DFF] bg-white text-[#4E5969]">
-                      {Array.from({length:24},(_,i)=>String(i).padStart(2,'0')).map(h=><option key={h} value={h}>{h}:00</option>)}
-                    </select>
-                    <span className="text-xs text-[#C9CDD4]">:</span>
-                    <select value={form.minute} onChange={e => setForm({...form, minute: e.target.value})}
-                      className="h-8 rounded-lg text-xs px-2 border border-[#E5E6EB] outline-none focus:border-[#165DFF] bg-white text-[#4E5969]">
-                      {['00','15','30','45'].map(m=><option key={m} value={m}>{m}</option>)}
-                    </select>
-                  </div>
-                )}
-                {form.frequency === 'hourly' && (
-                  <div className="text-xs text-[#86909C]">每小时整点执行</div>
-                )}
-                {form.frequency === 'once' && (
-                  <div className="text-xs text-[#86909C]">手动触发或指定具体时间执行</div>
-                )}
-              </div>
-
-              {/* Date Range */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-medium text-[#4E5969] block mb-1.5">生效日期（可选）</label>
-                  <input type="date" value={form.validFrom} onChange={e => setForm({...form, validFrom: e.target.value})}
-                    className="w-full h-9 rounded-lg text-xs px-3 border border-[#E5E6EB] outline-none focus:border-[#165DFF] text-[#4E5969]" />
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-[#4E5969] block mb-1.5">截止日期（可选）</label>
-                  <input type="date" value={form.validUntil} onChange={e => setForm({...form, validUntil: e.target.value})}
-                    className="w-full h-9 rounded-lg text-xs px-3 border border-[#E5E6EB] outline-none focus:border-[#165DFF] text-[#4E5969]" />
-                </div>
-              </div>
-
-              {/* Notify toggle */}
-              <div className="flex items-center justify-between py-1">
-                <div>
-                  <div className="text-xs font-medium text-[#4E5969]">完成推送</div>
-                  <div className="text-[10px] text-[#C9CDD4]">执行完成后推送到本设备</div>
-                </div>
-                <button onClick={() => setForm({...form, notify: !form.notify})}
-                  className={`w-8 h-5 rounded-full relative transition-colors shrink-0 ${form.notify ? 'bg-[#165DFF]' : 'bg-[#E5E6EB]'}`}>
-                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${form.notify ? 'left-[14px]' : 'left-[2px]'}`} />
-                </button>
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[#F2F3F5]">
-              <button onClick={() => { setShowAdd(false); reset() }}
-                className="px-4 py-2 rounded-lg text-sm text-[#4E5969] border border-[#E5E6EB] hover:bg-[#F7F8FA] transition-colors">
-                取消
-              </button>
-              <button onClick={addItem}
-                disabled={!form.name.trim() || !form.prompt.trim()}
-                className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-[#165DFF] hover:bg-[#0E4BD8] disabled:bg-[#C9CDD4] disabled:cursor-not-allowed transition-colors">
-                添加
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function MoreView({ onOpenSettings, onNav }: { onOpenSettings: () => void; onNav: (v: string) => void }) {
-  return (
-    <div className="p-6">
-      <div className="max-w-3xl mx-auto">
-        <h2 className="text-lg font-semibold text-[#1D2129] mb-4">更多</h2>
-        <div className="space-y-1">
-          {[
-            { icon: 'gear', label: '设置', desc: 'API Key、模型、权限等配置', onClick: onOpenSettings },
-            { icon: 'connector', label: '连接器', desc: '管理外部服务连接（飞书、GitHub 等）', onClick: () => onNav('connectors') },
-            { icon: 'doc', label: '快捷键', desc: '查看键盘快捷键', onClick: () => {
-              alert('快捷键:\n\nEnter — 发送消息\nShift+Enter — 换行\nCtrl+N — 新建对话\nCtrl+W — 关闭当前对话')
-            } },
-            { icon: 'help', label: '帮助文档', desc: '使用指南和常见问题', onClick: () => {
-              api()?.openExternal('https://github.com')
-            } },
-            { icon: 'update', label: '检查更新', desc: '当前版本 v1.4.1', onClick: () => {
-              alert('已是最新版本 v1.4.0')
-            } },
-          ].map(item => (
-            <div key={item.label} onClick={item.onClick}
-              className="flex items-center gap-4 px-4 py-3 rounded-lg cursor-pointer text-sm hover:bg-[#F7F8FA] transition-colors border border-transparent hover:border-[#F2F3F5]">
-              <span className="w-5 h-5 shrink-0 flex items-center justify-center text-[#86909C]">{iconSVG(item.icon)}</span>
-              <div className="flex-1 min-w-0">
-                <div className="text-[#1D2129] font-medium">{item.label}</div>
-                <div className="text-xs text-[#86909C]">{item.desc}</div>
-              </div>
-              <span className="text-[#C9CDD4] text-xs">→</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
+// ====== Main App ======
 
 export function App() {
   const [s, setS] = useState<AppState>({
     loggedIn: false, userName: '', apiKey: '', convs: [], activeId: null, msgs: [],
-    search: '', input: '', loading: false, view: 'chat', modelId: 'deepseek-v4-pro',
-    perm: 'default', mode: 'chat', persona: 'office', showSet: false, showRight: false, showMem: false,
+    search: '', input: '', loading: false, view: 'chat', modelId: 'auto',
+    perm: 'default', mode: 'craft', persona: 'office', showSet: false, showRight: false, showMem: false,
     rightTab: 'artifacts', thinking: false, showProfile: false,
     showOnboarding: false, onboardingStep: 0,
     artifacts: [],
     toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' },
+    toolSteps: [], creditUsed: 0,
+    attachments: [],
+    pendingTasks: [],
+    autoConfig: { defaultModel: 'deepseek-v4-pro', imageModel: 'deepseek-v4-flash' },
     activeScene: null,
   })
   const endRef = useRef<HTMLDivElement>(null)
@@ -1336,10 +136,57 @@ export function App() {
   const activeIdRef = useRef<string | null>(null)
   const cleanupRef = useRef<Array<() => void>>([])
   const [ready, setReady] = useState(false)
+  const [compacting, setCompacting] = useState(false)
+  const [skillsOpen, setSkillsOpen] = useState(false)
+  const skillsRef = useRef<HTMLDivElement>(null)
+  const [modelOpen, setModelOpen] = useState(false)
+  const modelDropdownRef = useRef<HTMLDivElement>(null)
+  const selectedModelName = s.modelId === 'auto' ? 'Auto' : (allModels.find(m => m.id === s.modelId)?.name || s.modelId)
+
+  // Close model dropdown on outside click
+  useEffect(() => {
+    if (!modelOpen) return
+    const handler = (e: MouseEvent) => {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
+        setModelOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [modelOpen])
+
+  // Close model dropdown when AI starts generating
+  useEffect(() => {
+    if (s.loading) setModelOpen(false)
+  }, [s.loading])
+
+  // Click outside to close skills dropdown
+  useEffect(() => {
+    if (!skillsOpen) return
+    const handler = (e: MouseEvent) => {
+      if (skillsRef.current && !skillsRef.current.contains(e.target as Node)) {
+        setSkillsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [skillsOpen])
   const [convLoading, setConvLoading] = useState<Record<string, boolean>>({})
   const [msgFeedback, setMsgFeedback] = useState<Record<string, 'like' | 'dislike' | null>>({})
 
   const u = useCallback((p: Partial<AppState>) => setS(prev => ({ ...prev, ...p })), [])
+
+  // Global error handler — catch "i is not a function" and prevent crash
+  const errorRef = useRef<Array<{time: string; msg: string}>>([])
+  useEffect(() => {
+    const handler = (event: ErrorEvent) => {
+      const msg = event.message || ''
+      errorRef.current = [...errorRef.current.slice(-4), { time: new Date().toISOString().slice(11,19), msg }]
+      console.error('[CoreBuddy Error]', msg, event.error?.stack)
+    }
+    window.addEventListener('error', handler)
+    return () => window.removeEventListener('error', handler)
+  }, [])
 
   useEffect(() => {
     if (ready || !api()) return
@@ -1352,6 +199,12 @@ export function App() {
     api()!.conv.status().then(st => setConvLoading(st))
     api()!.conv.onStatusChange(data => {
       setConvLoading(prev => ({ ...prev, [data.convId]: data.loading }))
+    })
+    // Listen for context compaction status
+    api()!.chat.onCompacting(data => {
+      if ((data as any).convId === undefined || (data as any).convId === activeIdRef.current) {
+        setCompacting(data.active)
+      }
     })
   }, [ready])
 
@@ -1397,11 +250,34 @@ export function App() {
     loadMsgs(id)
   }
 
-  const send = async (scenePrompt?: string, presetText?: string) => {
+  const send = async (scenePrompt?: string, presetText?: string, presetAttachments?: Array<{ name: string; path: string; type: string; size: number }>) => {
     const text = presetText || s.input.trim()
     if (!text || !api()) return
     if (!s.apiKey) { u({ showSet: true }); return }
-    if (sendingRef.current) return // prevent concurrent sends
+
+    // If already loading, add to pending task queue instead of discarding
+    const currentAttachments = presetAttachments || s.attachments
+    if (sendingRef.current) {
+      const newTask: PendingTask = {
+        id: uid(),
+        text: text,
+        attachments: [...currentAttachments],
+        timestamp: Date.now(),
+      }
+      u({ pendingTasks: [...s.pendingTasks, newTask], input: '', attachments: [] })
+      return
+    }
+
+    // Only auto-detect scene if not explicitly passed (e.g., from preset)
+    let effectiveScenePrompt = scenePrompt
+    if (!scenePrompt) {
+      const detected = detectScene(text)
+      const matchedScene = detected ? sceneData.find(sc => sc.id === detected) : null
+      if (matchedScene) {
+        effectiveScenePrompt = matchedScene.systemPrompt
+        if (matchedScene.persona) u({ persona: matchedScene.persona as any })
+      }
+    }
 
     // Auto-create conversation if none selected
     let thisConvId = s.activeId
@@ -1412,37 +288,63 @@ export function App() {
     }
 
     sendingRef.current = true
-    u({ input: '', loading: true, toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' } })
+    u({ input: '', loading: true, toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' }, toolSteps: [], creditUsed: 0, attachments: [] })
     streamRef.current = ''
     const aiMsg: Msg = { id: uid(), role: 'assistant', content: '', time: new Date().toISOString() }
-    setS(prev => ({ ...prev, msgs: [...prev.msgs, { id: uid(), role: 'user', content: text, time: new Date().toISOString() }, aiMsg] }))
+    // 构建带附件的消息文本 — include file paths so AI can read them
+    const attachmentText = currentAttachments.length > 0
+      ? currentAttachments.map(a => a.type === 'image' ? `[img:${a.path}]` : `[附件:${a.path}|${a.name}]`).join('\n') + (text ? '\n\n' + text : '')
+      : text
+    setS(prev => ({ ...prev, msgs: [...prev.msgs, { id: uid(), role: 'user', content: attachmentText, time: new Date().toISOString() }, aiMsg] }))
     const cc: Array<() => void> = []
-    // Stream chunk — filter by convId for background loading
+    // Stream chunk — debounce with requestAnimationFrame for performance
+    let rafId: ReturnType<typeof requestAnimationFrame> | null = null
     cc.push(api()!.chat.onStreamChunk(chunk => {
       const cid = (chunk as any).convId || thisConvId
       if (cid !== activeIdRef.current) return
       const textContent = typeof chunk === 'string' ? chunk : ((chunk as any).value ?? (chunk as any).content ?? chunk)
       streamRef.current += textContent
-      setS(prev => { const m = [...prev.msgs]; if (m.length) m[m.length - 1] = { ...m[m.length - 1], content: streamRef.current }; return { ...prev, msgs: m } })
+      if (!rafId) {
+        rafId = requestAnimationFrame(() => {
+          rafId = null
+          setS(prev => { const m = [...prev.msgs]; if (m.length) m[m.length - 1] = { ...m[m.length - 1], content: streamRef.current }; return { ...prev, msgs: m } })
+        })
+      }
     }))
     // Tool start
-    cc.push(api()!.chat.onToolStart(data => { if ((data as any).convId === activeIdRef.current) u({ toolStatus: { active: true, names: data.names, completed: 0, total: data.count, action: '准备中...' } }) }))
-    // Tool progress
-    cc.push(api()!.chat.onToolProgress(data => { if ((data as any).convId === activeIdRef.current) setS(prev => ({ ...prev, toolStatus: { ...prev.toolStatus, completed: data.completed, total: data.total } })) }))
-    // Tool action
-    cc.push(api()!.chat.onToolAction(data => { if ((data as any).convId === activeIdRef.current) setS(prev => ({ ...prev, toolStatus: { ...prev.toolStatus, action: data.action } })) }))
+    cc.push(api()!.chat.onToolStart(data => { if ((data as any).convId === activeIdRef.current) { if (!data.names || !Array.isArray(data.names)) return; const steps: ToolStep[] = []; for (let n = 0; n < data.names.length; n++) { steps.push({ name: data.names[n], params: '', status: n === 0 ? 'running' : 'pending' }) }; u({ toolSteps: steps, toolStatus: { active: true, names: data.names, completed: 0, total: data.count, action: '准备中...' } }) } }))
+    // Tool progress — use for loop instead of .map() to avoid minification name collisions
+    cc.push(api()!.chat.onToolProgress(data => { if ((data as any).convId === activeIdRef.current) setS(prev => {
+      if (!prev.toolSteps || prev.toolSteps.length === 0) return prev
+      const steps: ToolStep[] = []
+      for (let p = 0; p < prev.toolSteps.length; p++) {
+        steps.push(p < data.completed ? { ...prev.toolSteps[p], status: 'completed' as const } : p === data.completed ? { ...prev.toolSteps[p], status: 'running' as const } : prev.toolSteps[p])
+      }
+      return { ...prev, toolStatus: { ...prev.toolStatus, completed: data.completed, total: data.total }, toolSteps: steps, creditUsed: prev.creditUsed + 0.05 }
+    }) }))
+    // Tool action — same fix: for loop instead of .map()
+    cc.push(api()!.chat.onToolAction(data => { if ((data as any).convId === activeIdRef.current) setS(prev => {
+      if (!prev.toolSteps || prev.toolSteps.length === 0) return prev
+      const steps: ToolStep[] = []
+      for (let a = 0; a < prev.toolSteps.length; a++) {
+        steps.push(a === data.completed - 1 ? { ...prev.toolSteps[a], status: 'running' as const } : prev.toolSteps[a])
+      }
+      return { ...prev, toolStatus: { ...prev.toolStatus, action: data.action }, toolSteps: steps }
+    }) }))
     // Artifact created
     cc.push(api()!.chat.onArtifact(artifact => { if ((artifact as any).convId === activeIdRef.current) setS(prev => ({ ...prev, artifacts: [...prev.artifacts, artifact] })) }))
     // Stream done
     cc.push(api()!.chat.onStreamDone((data?: StreamDoneData) => {
       sendingRef.current = false
       if ((data as any)?.convId === activeIdRef.current) {
-        u({ loading: false, toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' } })
+        u({ loading: false, toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' }, toolSteps: [], creditUsed: 0 })
         if (data && data.artifactCount > 0) {
           u({ rightTab: 'artifacts', showRight: true })
         }
       }
       cc.forEach(f => f()); loadConvs()
+      // Auto-execute next task in queue
+      setTimeout(() => executeNextTaskInQueue(), 100)
     }))
     cc.push(api()!.chat.onStreamError(err => {
       sendingRef.current = false
@@ -1451,25 +353,93 @@ export function App() {
         const msg = typeof err === 'string' ? err : ((err as any).message || (err as any).error || (err as any).value || JSON.stringify(err))
         streamRef.current += `\n\n错误：${msg}`
         setS(prev => { const m = [...prev.msgs]; if (m.length) m[m.length - 1] = { ...m[m.length - 1], content: streamRef.current }; return { ...prev, msgs: m } })
-        u({ loading: false, toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' } })
+        u({ loading: false, toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' }, toolSteps: [], creditUsed: 0 })
       }
       cc.forEach(f => f())
+      // Auto-execute next task in queue
+      setTimeout(() => executeNextTaskInQueue(), 100)
     }))
     // Store for cleanup on unmount
     cleanupRef.current = cc
+    // Resolve 'auto' model selection based on task context
+    const resolvedModel = resolveAutoModel(s.modelId, currentAttachments, defaultModel)
+    const resolvedPerm = detectPermission(text)
     // Start message
     try {
-      await api()!.chat.sendMessage(text, s.modelId, thisConvId, permToNumber(s.perm), s.persona, scenePrompt || undefined, s.userName || undefined)
+      await api()!.chat.sendMessage(text, resolvedModel, thisConvId, permToNumber(resolvedPerm), s.persona, effectiveScenePrompt || undefined, s.userName || undefined, 'craft', currentAttachments)
     } catch (e: any) {
       sendingRef.current = false
       u({ loading: false })
       streamRef.current += `\n\n发送失败：${e?.message || e}`
       setS(prev => { const m = [...prev.msgs]; if (m.length) m[m.length - 1] = { ...m[m.length - 1], content: streamRef.current }; return { ...prev, msgs: m } })
       cc.forEach(f => f())
+      // Auto-execute next task in queue on error too
+      setTimeout(() => executeNextTaskInQueue(), 100)
     }
   }
 
   const keyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }
+
+  /**
+   * Auto model selection: picks the best model based on task context.
+   * - Image attachments → vision-capable model (deepseek-v4-flash)
+   * - Otherwise → default model (from config)
+   */
+  function resolveAutoModel(
+    modelId: string,
+    attachments: Array<{ name: string; path: string; type: string; size: number }>,
+    fallbackDefault: string
+  ): string {
+    if (modelId !== 'auto') return modelId
+    // Image attachments → image model from autoConfig
+    const hasImage = attachments.some(a => a.type === 'image' || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(a.name))
+    if (hasImage) return s.autoConfig.imageModel || 'deepseek-v4-flash'
+    // General tasks → default model from autoConfig
+    return s.autoConfig.defaultModel || fallbackDefault || 'deepseek-v4-pro'
+  }
+
+  /**
+   * Auto-detect scene based on user input text.
+   * Matches keywords in the input against scene keyword lists.
+   * Returns the best-matching scene ID, or null if no match.
+   */
+  function detectScene(text: string): string | null {
+    const lower = text.toLowerCase()
+    let bestScore = 0
+    let bestId: string | null = null
+    for (const scene of sceneData) {
+      if (!scene.keywords || scene.keywords.length === 0) continue
+      const score = scene.keywords.reduce((sum, kw) => {
+        return sum + (lower.includes(kw.toLowerCase()) ? 1 : 0)
+      }, 0)
+      if (score > bestScore) {
+        bestScore = score
+        bestId = scene.id
+      }
+    }
+    return bestScore >= 1 ? bestId : null
+  }
+
+  /**
+   * Execute the next task from the pending task queue.
+   * Called automatically after a task completes or errors.
+   */
+  function executeNextTaskInQueue() {
+    // Use a state updater to atomically grab the first task and remove it from queue
+    let taskText = ''
+    let taskAttachments: Array<{ name: string; path: string; type: string; size: number }> = []
+    setS(prev => {
+      if (prev.pendingTasks.length === 0) return prev
+      const [nextTask, ...rest] = prev.pendingTasks
+      taskText = nextTask.text
+      taskAttachments = nextTask.attachments
+      return { ...prev, pendingTasks: rest }
+    })
+    // After state update, dispatch the send with the captured task data
+    if (taskText) {
+      setTimeout(() => { send(undefined, taskText, taskAttachments) }, 50)
+    }
+  }
 
   // ============== Data ==============
   const [allModels, setAllModels] = useState<Array<{ id: string; name: string; apiUrl: string; apiKey?: string }>>([])
@@ -1487,6 +457,16 @@ export function App() {
   ]
   const currentConv = s.convs.find(c => c.id === s.activeId)
   const rightTabs: Array<{ k: AppState['rightTab']; l: string }> = [{ k: 'artifacts', l: '产物' }, { k: 'files', l: '文件' }, { k: 'changes', l: '变更' }, { k: 'preview', l: '预览' }]
+
+  // Detect permission level based on task content
+  function detectPermission(text: string): PermissionLevel {
+    const writeKeywords = ['写入', '创建', '生成', '写', '修改', '新建', '删除', '保存', '导出', '编译', '运行', '执行', '打包', '部署', 'install', 'write', 'create', 'delete', 'build', 'compile', 'run', 'exec', 'deploy', 'save']
+    const lower = text.toLowerCase()
+    for (const kw of writeKeywords) {
+      if (lower.includes(kw.toLowerCase())) return 'full'
+    }
+    return 'default'
+  }
 
   // ============== Login Screen ==============
   if (!s.loggedIn) return (
@@ -1823,350 +803,473 @@ export function App() {
                 <img src={logoText} alt="CoreBuddy" className="w-56 h-auto mb-1" />
                 <div className="text-xl font-medium text-[#1D2129] mb-1">你好，{s.userName}</div>
                 <div className="text-sm text-[#86909C] mb-6">
-                  {s.apiKey ? '我是你的私人 AI 秘书。选择场景快速开始：' : '点击设置 API Key 后开始。'}
+                  {s.apiKey ? '我是你的私人 AI 秘书。直接开始吧：' : '点击设置 API Key 后开始。'}
                 </div>
-                {/* Scene Selector */}
-                {s.apiKey && (
-                  <div className="flex flex-wrap gap-2 justify-center max-w-2xl">
-                    {sceneData.map(scene => (
-                      <button key={scene.id}
-                        onClick={() => u({ activeScene: s.activeScene === scene.id ? null : scene.id })}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs cursor-pointer transition-all
-                          ${s.activeScene === scene.id
-                            ? 'border-current bg-white shadow-sm'
-                            : 'border-[#E5E6EB] bg-white text-[#86909C] hover:border-[#165DFF] hover:text-[#165DFF]'}`}
-                        style={s.activeScene === scene.id ? { color: scene.color, borderColor: scene.color } : {}}>
-                        <span className="w-3.5 h-3.5 shrink-0 flex items-center justify-center" style={s.activeScene === scene.id ? { color: scene.color } : {}}>
-                          {iconSVG(scene.icon)}
-                        </span>
-                        <span>{scene.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
             )}
-            {/* Prompt Cards — shown when a scene is selected */}
-            {s.msgs.length === 0 && s.activeScene && s.apiKey && (() => {
-              const scene = sceneData.find(sc => sc.id === s.activeScene)
-              if (!scene) return null
-              return (
-                <div className="max-w-2xl mx-auto w-full">
-                  <div className="text-xs text-[#86909C] mb-2 ml-1">{scene.desc} · 选择具体任务：</div>
-                  <div className="space-y-1.5">
-                    {scene.prompts.map((p, i) => (
-                      <div key={i}
-                        onClick={() => { const sp = scene.systemPrompt; u({ activeScene: null }); send(sp, p.text) }}
-                        className="px-4 py-2.5 rounded-lg border border-[#E5E6EB] bg-white cursor-pointer hover:border-[#165DFF] hover:shadow-sm transition-all group">
-                        <div className="text-[13px] text-[#1D2129] group-hover:text-[#165DFF] font-medium">{p.label}</div>
-                        <div className="text-[11px] text-[#C9CDD4] mt-0.5 truncate">{p.text}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )
-            })()}
-
-            {/* Messages — WorkBuddy style: Thinking → Tools → Answer */}
+            {/* Messages — WorkBuddy style: consecutive AI messages merged into one block */}
             {(() => {
-              const els: React.ReactNode[] = []
-              for (let i = 0; i < s.msgs.length; i++) {
-                const m = s.msgs[i]
-                if (m.role === 'boundary') continue
+              // ----- Phase 1: Build message groups -----
+              // Consecutive assistant (+ tool) messages merge into one display block
+              interface ParsedAssistant {
+                msg: typeof s.msgs[0]
+                toolBlocks: Array<{ name: string; params: Record<string, any> }>
+                thinkingText: string
+                answerText: string
+                tools: Array<{ name: string; content: string }>
+              }
+              const groups: Array<
+                | { type: 'user'; key: string; msg: typeof s.msgs[0] }
+                | { type: 'assistant'; key: string; msgs: ParsedAssistant[] }
+              > = []
 
-                // User — right-aligned blue bubble
+              for (let gi = 0; gi < s.msgs.length; ) {
+                const m = s.msgs[gi]
+                if (m.role === 'boundary') { gi++; continue }
+
+                // User → own group
                 if (m.role === 'user') {
-                  els.push(<div key={m.id} className="ml-auto max-w-[75%]"><div className="bg-[#E8F3FF] text-[15px] text-[#1D2129] px-4 py-2.5 rounded-xl whitespace-pre-wrap">{m.content}</div></div>)
+                  groups.push({ type: 'user', key: m.id, msg: m })
+                  gi++
                   continue
                 }
 
-                if (m.role === 'tool') continue
-
-                // Assistant — parse into: thinking + tool calls + answer
+                // Assistant → start assistant group, collect consecutive assistant+tool messages
                 if (m.role === 'assistant') {
-                  // 1. Extract tool calls
-                  const toolBlocks: Array<{ name: string; params: Record<string, any> }> = []
-                  const r = /```tool\s*\n?(\{[\s\S]*?\})\s*```/g; let mt
-                  while ((mt = r.exec(m.content)) !== null) {
-                    try { const t = JSON.parse(mt[1]); toolBlocks.push({ name: t.action, params: t.params || {} }) } catch {}
-                  }
+                  const assistantMsgs: ParsedAssistant[] = []
 
-                  // 2. Split content: thinking text (before first tool) → tool blocks → answer text (after last tool)
-                  const toolBlockTexts: string[] = []
-                  let clean = m.content
-                  const tbRegex = /```tool[\s\S]*?```/g
-                  let tbMatch
-                  while ((tbMatch = tbRegex.exec(m.content)) !== null) {
-                    toolBlockTexts.push(tbMatch[0])
-                  }
-                  // Remove tool blocks from content
-                  clean = clean.replace(/```tool[\s\S]*?```/g, '')
-                  // Remove noise
-                  clean = clean.replace(/\[使用工具:.*?\]\n?/g, '').replace(/\[Hook[^\]]*\]\n?/g, '').replace(/\[警告\].*?\n?/g, '').replace(/^\s*\n/gm, '').trim()
+                  while (gi < s.msgs.length) {
+                    const cm = s.msgs[gi]
+                    if (cm.role === 'user') break
+                    if (cm.role === 'boundary') { gi++; continue }
 
-                  // 3. Split clean into thinking + answer
-                  // Thinking = everything before "现在" pattern, or just the analysis text
-                  let thinkingText = ''
-                  let answerText = clean
-                  // If tool blocks exist, separate thinking (before tools) from answer (after tools)
-                  if (toolBlocks.length > 0) {
-                    const parts = clean.split(/\n(?=我在|已写入|已完成|根据|现在|这是|好的|让我|我来)/i)
-                    if (parts.length >= 2) {
-                      thinkingText = parts.slice(0, -1).join('\n').trim()
-                      answerText = parts.slice(-1).join('\n').trim()
-                    } else if (clean.length > 0) {
-                      answerText = clean
+                    if (cm.role === 'assistant') {
+                      // Parse assistant message (same logic as before)
+                      const toolBlocks: Array<{ name: string; params: Record<string, any> }> = []
+                      const r = /```tool\s*\n?(\{[\s\S]*?\})\s*```/g; let mt
+                      while ((mt = r.exec(cm.content)) !== null) {
+                        try { const t = JSON.parse(mt[1]); toolBlocks.push({ name: t.action, params: t.params || {} }) } catch {}
+                      }
+
+                      let clean = cm.content
+                      clean = clean.replace(/```tool[\s\S]*?```/g, '')
+                      clean = clean.replace(/\[使用工具:.*?\]\n?/g, '').replace(/\[Hook[^\]]*\]\n?/g, '').replace(/\[警告\].*?\n?/g, '').replace(/^\s*\n/gm, '').trim()
+
+                      // Also strip raw /think markers from clean
+                      // (the matched thinking text will be captured below; any leftover markers after removal are stripped)
+                      clean = clean.replace(/^\/think\s*\n?/gm, '').trim()
+
+                      let thinkingText = ''
+                      let answerText = clean
+                      // Support both /think.../think (WorkBuddy style) and [think]...[/think] (legacy)
+                      const thinkingMatch = clean.match(/\/think\s*\n?([\s\S]*?)\n?\/think/i) || clean.match(/\[think\]([\s\S]*?)\[\/think\]/i)
+                      if (thinkingMatch) {
+                        thinkingText = thinkingMatch[1].trim()
+                        // Strip both formats from answer
+                        answerText = clean.replace(/\/think\s*\n?([\s\S]*?)\n?\/think/gi, '').replace(/\[think\][\s\S]*?\[\/think\]/gi, '').trim()
+                        answerText = answerText.replace(/^\n+|\n+$/g, '').replace(/\n{3,}/g, '\n\n')
+                      } else if (toolBlocks.length > 0) {
+                        const parts = clean.split(/\n(?=我在|已写入|已完成|根据|现在|这是|好的|让我|我来)/i)
+                        if (parts.length >= 2) {
+                          thinkingText = parts.slice(0, -1).join('\n').trim()
+                          answerText = parts.slice(-1).join('\n').trim()
+                        } else if (clean.length > 0) {
+                          answerText = clean
+                        }
+                      }
+
+                      if (/<(script|style|html|head|body|meta|link)[^>]*>/i.test(answerText)) {
+                        answerText = answerText.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\s{2,}/g, '\n').trim()
+                      }
+
+                      // Collect tool results for this message
+                      const tools: Array<{ name: string; content: string }> = []
+                      let ti = gi + 1
+                      while (ti < s.msgs.length && s.msgs[ti].role === 'tool') {
+                        const tc = s.msgs[ti].content
+                        const nm = tc.match(/Tool "(\w+)" result/)
+                        tools.push({ name: nm ? nm[1] : 'tool', content: tc.replace(/^Tool "\w+" result:\s*/m, '').trim().slice(0, 1000) })
+                        ti++
+                      }
+
+                      assistantMsgs.push({ msg: cm, toolBlocks, thinkingText, answerText, tools })
+                      gi = ti // Advance past consumed tool messages
+                      continue
                     }
+
+                    if (cm.role === 'tool') { gi++; continue }
+                    break
                   }
 
-                  // HTML filter for answer
-                  if (/<(script|style|html|head|body|meta|link)[^>]*>/i.test(answerText)) {
-                    answerText = answerText.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\s{2,}/g, '\n').trim()
+                  if (assistantMsgs.length > 0) {
+                    groups.push({ type: 'assistant', key: assistantMsgs[0].msg.id, msgs: assistantMsgs })
                   }
+                  continue
+                }
 
-                  // 4. Collect tool results
-                  const tools: Array<{ name: string; content: string }> = []
-                  let j = i + 1
-                  while (j < s.msgs.length && s.msgs[j].role === 'tool') {
-                    const tc = s.msgs[j].content
-                    const nm = tc.match(/Tool "(\w+)" result/)
-                    tools.push({ name: nm ? nm[1] : 'tool', content: tc.replace(/^Tool "\w+" result:\s*/m, '').trim().slice(0, 1000) })
-                    j++
-                  }
-                  i = j - 1
+                gi++ // Skip orphan tool messages
+              }
 
-                  // 5. Render — WorkBuddy style cards
-                  const isLast = i === s.msgs.length - 1 || (j > s.msgs.length - 1)
-                  const hasNoAnswer = !answerText && !toolBlocks.length
+              // ----- Phase 2: Render groups -----
+              const els: React.ReactNode[] = []
+
+              for (let bi = 0; bi < groups.length; bi++) {
+                const group = groups[bi]
+                const isLastGroup = bi === groups.length - 1
+
+                // ---- User bubble ----
+                if (group.type === 'user') {
+                  els.push(<div key={group.key} className="ml-auto max-w-[75%]">
+                    <div className="bg-[#E8F3FF] text-[15px] text-[#1D2129] px-4 py-2.5 rounded-xl whitespace-pre-wrap break-words">
+                      {group.msg.content.split(/(\[img:[^\]]+\]|\[附件:[^\]]+\])/g).map((part, pi) => {
+                        const imgMatch = part.match(/^\[img:(.+)\]$/)
+                        if (imgMatch) {
+                          return <img key={pi} src={`file://${imgMatch[1]}`} className="max-w-[200px] max-h-[200px] rounded-lg object-cover my-1" alt="" />
+                        }
+                        const attMatch = part.match(/^\[附件:(.+)\|(.+)\]$/)
+                        if (attMatch) {
+                          return <span key={pi} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white/60 text-[12px] text-[#86909C] my-0.5">📄 {attMatch[2]}</span>
+                        }
+                        return part || null
+                      })}
+                    </div>
+                  </div>)
+                  continue
+                }
+
+                // ---- Assistant block (merged consecutive messages) ----
+                if (group.type === 'assistant') {
+                  const parsedMsgs = group.msgs
+                  const firstMsg = parsedMsgs[0].msg
+                  const lastParsed = parsedMsgs[parsedMsgs.length - 1]
+                  const lastMsg = lastParsed.msg
+
+                  const groupIsLoading = isLastGroup && s.loading
+                  const lastHasNoAnswer = !lastParsed.answerText && !lastParsed.toolBlocks.length
+
+                  // All tool results across the group
+                  const allTools = parsedMsgs.flatMap(p => p.tools)
+
+                  // Combined answer for copy
+                  const combinedAnswer = parsedMsgs.map(p => p.answerText).filter(Boolean).join('\n\n---\n\n')
+
                   els.push(
-                    <div key={m.id} className="flex items-start gap-3 max-w-[100%]">
-                      <img src={aiAvatar} alt="CoreBuddy" className="w-8 h-8 rounded-lg object-cover shrink-0 mt-0.5" />
+                    <div key={group.key} className="flex items-start gap-3 max-w-[100%]">
+                      {/* Avatar column */}
+                      <div className="flex flex-col items-center gap-1 shrink-0">
+                        <img src={aiAvatar} alt="CoreBuddy" className="w-8 h-8 rounded-lg object-cover shrink-0" />
+                        {(s.mode !== 'craft' || s.persona !== 'office') && (
+                          <div className="flex flex-col gap-0.5 items-center">
+                            <span className="text-[9px] px-1 py-0.5 rounded bg-[#F2F3F5] text-[#86909C] leading-none whitespace-nowrap">
+                              {s.persona === 'office' ? '办公' : s.persona === 'code' ? '开发' : '创意'}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Content column — all sub-messages rendered in order */}
                       <div className="flex-1 min-w-0 space-y-3">
-                      {/* Thinking phase */}
-                      {(thinkingText || toolBlocks.length > 0) && (
-                        <CollapsibleSection title={toolBlocks.length > 0 ? `分析 & 计划 (${toolBlocks.length} 步)` : '思考过程'} defaultOpen={false}>
-                          {thinkingText && <div className="text-[13px] text-[#4E5969] leading-relaxed whitespace-pre-wrap"><FormattedContent content={thinkingText} /></div>}
-                          {/* Tool execution plan */}
-                          {toolBlocks.length > 0 && (
-                            <div className="mt-2 space-y-1">
-                              {toolBlocks.map((tb, ti) => (
-                                <div key={ti} className="flex items-center gap-2 text-[12px]">
-                                  <span className="w-4 h-4 rounded-full bg-[#F2F3F5] flex items-center justify-center text-[10px] text-[#86909C] shrink-0">{ti + 1}</span>
-                                  <span className="text-[#86909C] font-mono text-[11px]">{tb.name}</span>
-                                  <span className="text-[#C9CDD4] text-[10px]">
-                                    {Object.entries(tb.params).slice(0, 3).map(([k, v]) => `${k}=${String(v).slice(0, 20)}`).join(' ')}
+                        {/* Tool Execution Timeline — shown during loading */}
+                        {groupIsLoading && s.toolSteps.length > 0 && (
+                          <div className="border border-[#E5E6EB] rounded-lg overflow-hidden">
+                            <div className="flex items-center justify-between px-3 py-2 bg-[#F7F8FA] border-b border-[#E5E6EB]">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[12px] font-medium text-[#1D2129]">工具执行</span>
+                                <span className="text-[11px] text-[#86909C]">
+                                  {s.toolStatus.completed}/{s.toolStatus.total} 步
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[11px] text-[#C9CDD4]">{s.creditUsed.toFixed(2)}</span>
+                              </div>
+                            </div>
+                            <div className="divide-y divide-[#F2F3F5]">
+                              {s.toolSteps.map((step, idx) => (
+                                <div key={idx} className="flex items-center gap-2.5 px-3 py-2 hover:bg-[#FAFAFA] transition-colors">
+                                  {/* Status circle — grey outline only */}
+                                  <span className="w-[18px] h-[18px] shrink-0 flex items-center justify-center">
+                                    {step.status === 'completed' ? (
+                                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                                        <circle cx="9" cy="9" r="8" stroke="#C9CDD4" strokeWidth="1"/>
+                                        <path d="M5.5 9l2.5 2.5L12.5 6.5" stroke="#86909C" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                                      </svg>
+                                    ) : step.status === 'running' ? (
+                                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                                        <circle cx="9" cy="9" r="8" stroke="#C9CDD4" strokeWidth="1"/>
+                                        <path d="M9 3v3M9 12v3M5 9H3M14 9h-3" stroke="#86909C" strokeWidth="1" strokeLinecap="round">
+                                          <animateTransform attributeName="transform" type="rotate" from="0 9 9" to="360 9 9" dur="1.5s" repeatCount="indefinite"/>
+                                        </path>
+                                      </svg>
+                                    ) : step.status === 'failed' ? (
+                                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                                        <circle cx="9" cy="9" r="8" stroke="#C9CDD4" strokeWidth="1"/>
+                                        <path d="M6.5 6.5l5 5M11.5 6.5l-5 5" stroke="#86909C" strokeWidth="1" strokeLinecap="round"/>
+                                      </svg>
+                                    ) : (
+                                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                                        <circle cx="9" cy="9" r="8" stroke="#E5E6EB" strokeWidth="1"/>
+                                      </svg>
+                                    )}
+                                  </span>
+                                  <span className="text-[12px] text-[#1D2129] font-mono flex-1">{step.name}</span>
+                                  <span className="text-[10px] text-[#C9CDD4]">
+                                    {step.status === 'completed' ? '完成' :
+                                     step.status === 'running' ? '执行中...' :
+                                     step.status === 'failed' ? '失败' : '等待中'}
                                   </span>
                                 </div>
                               ))}
                             </div>
-                          )}
-                          {/* Tool results */}
-                          {tools.length > 0 && (
-                            <div className="mt-2 border-t border-[#F2F3F5] pt-2">
-                              <div className="text-[11px] font-medium text-[#4E5969] mb-1">执行结果</div>
-                              <div className="space-y-1.5">
-                                {tools.map((t, ti) => {
-                                  const isFileCreation = t.content.includes('已写入') || t.content.includes('已创建') || t.content.includes('已生成')
+                          </div>
+                        )}
+
+                        {/* Render each sub-message content in order */}
+                        {parsedMsgs.map((parsed, pi) => (
+                          <React.Fragment key={parsed.msg.id}>
+                            {/* Thinking block — collapsed by default (WorkBuddy style), click to expand */}
+                            {parsed.thinkingText && (
+                              <CollapsibleSection
+                                title={parsedMsgs.length > 1 ? `思考过程 (第${pi + 1}轮)` : '思考路径'}
+                                defaultOpen={false}>
+                                <div className="text-[13px] text-[#4E5969] leading-relaxed whitespace-pre-wrap"><FormattedContent content={parsed.thinkingText} /></div>
+                              </CollapsibleSection>
+                            )}
+
+                            {/* Answer text */}
+                            {parsed.answerText ? (
+                              <div>
+                                <FormattedContent content={parsed.answerText.replace(/\[choice:[^\]]+?:[^\]]+?\]/g, '')} />
+                                {/* Interactive choices — [choice:label:response] format */}
+                                {(() => {
+                                  const choices: Array<{label: string; text: string}> = []
+                                  const regex = /\[choice:([^\]]+?):([^\]]+?)\]/g
+                                  let match
+                                  while ((match = regex.exec(parsed.answerText)) !== null) {
+                                    choices.push({ label: match[1], text: match[2] })
+                                  }
+                                  if (choices.length === 0) return null
                                   return (
-                                    <details key={ti} className="text-[11px]" open={isFileCreation}>
-                                      <summary className={`cursor-pointer hover:text-[#4E5969] flex items-center gap-1.5 ${isFileCreation ? 'text-[#165DFF] font-medium' : 'text-[#86909C]'}`}>
-                                        <span className={`w-1.5 h-1.5 rounded-full ${isFileCreation ? 'bg-[#61C454]' : 'bg-[#C9CDD4]'}`}></span>
-                                        {t.name}
-                                        {isFileCreation && <span className="text-[10px] text-[#61C454]">✓ 产物生成</span>}
-                                      </summary>
-                                      <pre className="mt-1 text-[11px] text-[#86909C] font-mono bg-[#F7F8FA] rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">{t.content}</pre>
-                                    </details>
+                                    <div className="flex flex-wrap gap-2 mt-3">
+                                      {choices.map((c, ci) => (
+                                        <button key={ci}
+                                          onClick={() => send(undefined, c.text)}
+                                          className="px-3.5 py-1.5 rounded-lg border border-[#165DFF] bg-white text-[12px] text-[#165DFF] hover:bg-[#E8F3FF] hover:shadow-sm cursor-pointer transition-all">
+                                          {c.label}
+                                        </button>
+                                      ))}
+                                    </div>
                                   )
-                                })}
+                                })()}
                               </div>
+                            ) : null}
+                          </React.Fragment>
+                        ))}
+
+                        {/* Loading dots — shown while generating answer */}
+                        {groupIsLoading && !lastHasNoAnswer && lastParsed.answerText && (
+                          <div className="flex items-center gap-2 text-[12px] text-[#165DFF] animate-pulse">
+                            <span className="w-2 h-2 rounded-full bg-[#165DFF] animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                            <span className="w-2 h-2 rounded-full bg-[#165DFF] animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                            <span className="w-2 h-2 rounded-full bg-[#165DFF] animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                            <span className="text-[#86909C] ml-1">AI 正在生成...</span>
+                          </div>
+                        )}
+
+                        {/* Tool results — always visible as steps */}
+                        {!groupIsLoading && allTools.length > 0 && (
+                          <div className="border border-[#E5E6EB] rounded-lg overflow-hidden">
+                            <div className="flex items-center gap-2 px-3 py-2 bg-[#F7F8FA] text-[12px] text-[#4E5969]">
+                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="#86909C" strokeWidth="1"/><path d="M6 3v3l2 1" stroke="#86909C" strokeWidth="1" strokeLinecap="round"/></svg>
+                              <span>执行路径 ({allTools.length} 步)</span>
                             </div>
-                          )}
-                        </CollapsibleSection>
-                      )}
+                            <div className="divide-y divide-[#F2F3F5]">
+                              {allTools.map((t, ti) => {
+                                return (
+                                  <details key={ti} className="text-[12px]">
+                                    <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-[#FAFAFA]">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-[#C9CDD4] shrink-0"></span>
+                                      <span className="font-mono text-[#1D2129]">{t.name}</span>
+                                    </summary>
+                                    <pre className="mx-3 mb-2 text-[11px] text-[#86909C] font-mono bg-[#F7F8FA] rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">{t.content}</pre>
+                                  </details>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )}
 
-                      {/* Answer */}
-                      {answerText ? (
-                        <div>
-                          <FormattedContent content={answerText} />
+                        {/* Loading spinner — when waiting for first answer */}
+                        {groupIsLoading && lastHasNoAnswer && (
+                          <div className="flex flex-col gap-2 py-2">
+                            {/* Thinking indicator — grey outline style */}
+                            <div className="flex items-center gap-2.5 text-[13px] text-[#86909C]">
+                              <div className="flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-[#C9CDD4] animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                                <span className="w-1.5 h-1.5 rounded-full bg-[#C9CDD4] animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                                <span className="w-1.5 h-1.5 rounded-full bg-[#C9CDD4] animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                              </div>
+                              <span className="font-medium">思考中</span>
+                            </div>
+                            {/* Tool execution progress — WorkBuddy style steps */}
+                            {s.toolStatus.active && s.toolSteps.length > 0 && (
+                              <div className="ml-1 space-y-1.5">
+                                {s.toolSteps.map((step, si) => (
+                                  <div key={si} className="flex items-center gap-2 text-[12px]">
+                                    {step.status === 'completed' ? (
+                                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="#C9CDD4" strokeWidth="1"/><path d="M3.5 6l1.5 1.5L8.5 4" stroke="#C9CDD4" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                    ) : step.status === 'running' ? (
+                                      <svg className="animate-spin" width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="4.5" stroke="#C9CDD4" strokeWidth="1.2" strokeDasharray="20 30"/></svg>
+                                    ) : (
+                                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="#E5E6EB" strokeWidth="1"/></svg>
+                                    )}
+                                    <span className={step.status === 'completed' ? 'text-[#86909C]' : step.status === 'running' ? 'text-[#86909C]' : 'text-[#C9CDD4]'}>{step.name}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {s.toolStatus.active && !s.toolSteps.length && (
+                              <div className="flex items-center gap-1.5 text-[12px] text-[#86909C]">
+                                <svg className="animate-spin" width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="5" r="4" stroke="#C9CDD4" strokeWidth="1.5" strokeDasharray="8 12"/></svg>
+                                <span>{s.toolStatus.action || `正在执行 (${s.toolStatus.completed}/${s.toolStatus.total})`}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
 
-                          {/* Message Action Bar — copy, like, dislike */}
+                        {/* Tool action status indicators — past actions */}
+                        {!groupIsLoading && allTools.length > 0 && combinedAnswer && (
+                          <div className="space-y-0.5">
+                            {allTools.map((t, ti) => {
+                              const isRead = t.name.includes('read') || t.name.includes('list')
+                              const isWrite = t.name.includes('write') || t.name.includes('create')
+                              const isSearch = t.name.includes('search')
+                              const label = isRead ? '已读取' : isWrite ? '已创建' : isSearch ? '已搜索' : '已执行'
+                              return (
+                                <div key={ti} className="flex items-center gap-1.5 text-[11px] text-[#86909C]">
+                                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                    <circle cx="6" cy="6" r="5" stroke="#C9CDD4" strokeWidth="1"/>
+                                    <path d="M3.5 6l1.5 1.5L8.5 4" stroke="#C9CDD4" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                                  </svg>
+                                  <span className="text-[#86909C]">{label}</span>
+                                  <span className="text-[#C9CDD4] truncate max-w-[200px]">{t.name}</span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+
+                        {/* Action Bar — copy, like, dislike (bottom of merged block) */}
+                        {!groupIsLoading && combinedAnswer && (
                           <div className="mt-2 pt-2 border-t border-[#F2F3F5] flex items-center gap-1 flex-wrap">
-                            {/* Copy button */}
                             <button
                               onClick={async () => {
-                                try { await navigator.clipboard.writeText(answerText) } catch {}
+                                try { await navigator.clipboard.writeText(combinedAnswer) } catch {}
                               }}
                               className="flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[#86909C] hover:bg-[#F2F3F5] hover:text-[#4E5969] transition-colors"
                               title="复制回答">
-                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="2" y="2" width="7" height="8" rx="1" stroke="currentColor" strokeWidth="1"/><path d="M3.5 1.5h6a1 1 0 011 1v7" stroke="currentColor" strokeWidth="1"/></svg>
+                              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="5" width="8" height="9" rx="1"/><path d="M3 11V3.5A1.5 1.5 0 014.5 2h7"/></svg>
                               <span>复制</span>
                             </button>
 
-                            {/* Like button */}
                             <button
                               onClick={() => {
-                                const newState = msgFeedback[m.id] === 'like' ? null : 'like'
-                                setMsgFeedback(prev => ({ ...prev, [m.id]: newState }))
+                                const newState = msgFeedback[lastMsg.id] === 'like' ? null : 'like'
+                                setMsgFeedback(prev => ({ ...prev, [lastMsg.id]: newState }))
                                 if (newState === 'like') {
-                                  api()?.chat.feedback(s.activeId || '', m.id, 'like', answerText)
+                                  api()?.chat.feedback(s.activeId || '', lastMsg.id, 'like', combinedAnswer)
                                 }
                               }}
                               className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] transition-colors ${
-                                msgFeedback[m.id] === 'like'
+                                msgFeedback[lastMsg.id] === 'like'
                                   ? 'text-[#165DFF] bg-[#E8F3FF]'
                                   : 'text-[#86909C] hover:bg-[#F2F3F5] hover:text-[#4E5969]'
                               }`}
                               title="赞同回答">
-                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                                <path d="M3.5 5l1.5 3L8.5 3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                              </svg>
+                              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M4.5 6.5h-1a1 1 0 00-1 1v6a1 1 0 001 1h1M4.5 6.5l1.8-4.3a1.6 1.6 0 012.9.6v2.7h3.2a1.5 1.5 0 011.4 1.9l-1.3 5.5a1 1 0 01-1 .6H8.3a4 4 0 01-2-.6L4.5 13"/></svg>
                               <span>赞同</span>
                             </button>
 
-                            {/* Dislike button */}
                             <button
                               onClick={() => {
-                                const newState = msgFeedback[m.id] === 'dislike' ? null : 'dislike'
-                                setMsgFeedback(prev => ({ ...prev, [m.id]: newState }))
+                                const newState = msgFeedback[lastMsg.id] === 'dislike' ? null : 'dislike'
+                                setMsgFeedback(prev => ({ ...prev, [lastMsg.id]: newState }))
                                 if (newState === 'dislike') {
-                                  api()?.chat.feedback(s.activeId || '', m.id, 'dislike', answerText)
+                                  api()?.chat.feedback(s.activeId || '', lastMsg.id, 'dislike', combinedAnswer)
                                 }
                               }}
                               className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] transition-colors ${
-                                msgFeedback[m.id] === 'dislike'
+                                msgFeedback[lastMsg.id] === 'dislike'
                                   ? 'text-[#EC5B56] bg-[#FFF0F0]'
                                   : 'text-[#86909C] hover:bg-[#F2F3F5] hover:text-[#4E5969]'
                               }`}
                               title="不赞同回答">
-                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                                <path d="M3.5 3l1.5 3L8.5 7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                              </svg>
+                              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M11.5 9.5h1a1 1 0 001-1v-6a1 1 0 00-1-1h-1M11.5 9.5L9.7 13.8a1.6 1.6 0 01-2.9-.6V10.5H3.6a1.5 1.5 0 01-1.4-1.9l1.3-5.5a1 1 0 011-.6h3.2a4 4 0 012 .6l1.8 1.4"/></svg>
                               <span>不赞同</span>
                             </button>
 
-                            {/* Credits / Tokens info */}
                             <span className="text-[10px] text-[#C9CDD4] ml-auto">
-                              共消耗 ~{Math.round(answerText.replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '').length / 4)} tokens
+                              共消耗 ~{Math.round(combinedAnswer.replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '').length / 4)} tokens
                             </span>
                           </div>
+                        )}
 
-                          {/* Artifacts produced in this message */}
-                          {(() => {
-                            const msgArtifacts = s.artifacts.filter(a => {
-                              // Match artifacts to this message by time proximity
-                              const aTime = new Date(a.time).getTime()
-                              const mTime = new Date(m.time).getTime()
-                              return Math.abs(aTime - mTime) < 300000 // within 5 minutes
-                            })
-                            if (msgArtifacts.length === 0) return null
-                            return (
-                              <div className="mt-2 p-2 rounded-lg bg-[#F7F8FA] border border-[#F2F3F5]">
-                                <div className="text-[11px] font-medium text-[#4E5969] mb-1">
-                                  任务产生制品 ({msgArtifacts.length}个):
+                        {/* Artifacts produced */}
+                        {(() => {
+                          const msgArtifacts = s.artifacts.filter(a => {
+                            const aTime = new Date(a.time).getTime()
+                            const mTime = new Date(firstMsg.time).getTime()
+                            return Math.abs(aTime - mTime) < 300000
+                          })
+                          if (msgArtifacts.length === 0) return null
+                          return (
+                            <div className="p-2 rounded-lg bg-[#F7F8FA] border border-[#F2F3F5]">
+                              <div className="text-[11px] font-medium text-[#4E5969] mb-1">
+                                任务产生制品 ({msgArtifacts.length}个):
+                              </div>
+                              {msgArtifacts.map((a, ai) => (
+                                <div key={ai}
+                                  onClick={() => api()?.file.open(a.path)}
+                                  className="flex items-center gap-1.5 text-[11px] text-[#165DFF] cursor-pointer hover:underline py-0.5 truncate">
+                                  {fileIcon(a.type)}
+                                  <span className="truncate">{a.path.split(/[/\\]/).pop()}</span>
+                                  <span className="text-[#C9CDD4] shrink-0">- {a.type}</span>
                                 </div>
-                                {msgArtifacts.map((a, ai) => (
-                                  <div key={ai}
-                                    onClick={() => api()?.file.open(a.path)}
-                                    className="flex items-center gap-1.5 text-[11px] text-[#165DFF] cursor-pointer hover:underline py-0.5 truncate">
-                                    {fileIcon(a.type)}
-                                    <span className="truncate">{a.path.split(/[/\\]/).pop()}</span>
-                                    <span className="text-[#C9CDD4] shrink-0">- {a.type}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            )
-                          })()}
-
-                          {/* File changes summary — upgraded with file icons and diff-style cards */}
-                          {tools.length > 0 && (
-                            <div className="mt-2 rounded-lg bg-[#F7F8FA] border border-[#F2F3F5] overflow-hidden">
-                              <div className="text-[11px] font-medium text-[#4E5969] px-3 py-2 border-b border-[#F2F3F5]">
-                                文件变更 ({tools.length}个):
-                              </div>
-                              <div className="divide-y divide-[#F2F3F5]">
-                                {tools.map((t, ti) => {
-                                  const isCreate = t.name.includes('create') || t.name.includes('write')
-                                  const isSuccess = !t.content.includes('失败') && !t.content.includes('错误')
-                                  const label = isCreate ? '新建' : isSuccess ? '修改' : '失败'
-                                  const labelBg = isCreate ? 'bg-[#E8FFE8] text-[#52C41A]' : isSuccess ? 'bg-[#E8F3FF] text-[#165DFF]' : 'bg-[#FFF0F0] text-[#EC5B56]'
-                                  const dotColor = isCreate ? 'bg-[#61C454]' : isSuccess ? 'bg-[#165DFF]' : 'bg-[#EC5B56]'
-                                  const icon = isCreate ? '+' : isSuccess ? '~' : '✕'
-
-                                  // Extract file path from tool content
-                                  let filePath = ''
-                                  const pathMatch = t.content.match(/(?:[A-Za-z]:[\\/][^\s]+|(?:\/[^\s]+)+\.\w+|(?:\S+[\\/])+\S+\.\w+)/)
-                                  if (pathMatch) filePath = pathMatch[0]
-                                  else filePath = t.name
-
-                                  const fileName = filePath.split(/[/\\]/).pop() || filePath
-                                  const ext = fileName.includes('.') ? fileName.split('.').pop()?.toLowerCase() || '' : ''
-
-                                  return (
-                                    <div key={ti} className="flex items-center gap-2 px-3 py-2 text-[11px]">
-                                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`}></span>
-                                      <span className="text-[#C9CDD4] font-mono w-3 shrink-0">{icon}</span>
-                                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${labelBg} shrink-0`}>{label}</span>
-                                      <span className="text-[#1D2129] truncate font-mono text-[11px]">{fileName}</span>
-                                      {ext && <span className="text-[#C9CDD4] text-[10px] shrink-0">.{ext}</span>}
-                                    </div>
-                                  )
-                                })}
-                              </div>
+                              ))}
                             </div>
-                          )}
-                        </div>
-                      ) : null}
+                          )
+                        })()}
 
-                      {/* Loading indicator — WorkBuddy style: hollow spinner + action text */}
-                      {isLast && s.loading && hasNoAnswer && (
-                        <div className="flex items-center gap-2 py-1.5 text-[13px] text-[#86909C]">
-                          {/* Hollow circle spinner with arc fill animation */}
-                          <svg className="animate-[spin_1.2s_linear_infinite]" width="14" height="14" viewBox="0 0 14 14" fill="none">
-                            <circle cx="7" cy="7" r="5.5" stroke="#E5E6EB" strokeWidth="1.5" />
-                            <path d="M7 1.5a5.5 5.5 0 014.89 3.2" stroke="#86909C" strokeWidth="1.5" strokeLinecap="round" />
-                          </svg>
-                          {s.toolStatus.active ? (
-                            <span>
-                              {s.toolStatus.action || `正在执行工具 (${s.toolStatus.completed}/${s.toolStatus.total})`}
-                            </span>
-                          ) : (
-                            <span>生成回复中...</span>
-                          )}
-                          {s.toolStatus.active && s.toolStatus.total > 0 && (
-                            <span className="text-[11px] text-[#C9CDD4] ml-1">
-                              <span className="inline-block w-[3px] h-[3px] rounded-full bg-[#86909C] mx-1 align-middle" />
-                              {s.toolStatus.completed}/{s.toolStatus.total} 步
-                            </span>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Tool action status indicators (past actions shown as completed) */}
-                      {isLast && !s.loading && tools.length > 0 && answerText && (
-                        <div className="mt-1 space-y-0.5">
-                          {tools.map((t, ti) => {
-                            const isRead = t.name.includes('read') || t.name.includes('list')
-                            const isWrite = t.name.includes('write') || t.name.includes('create')
-                            const isSearch = t.name.includes('search')
-                            const isSuccess = !t.content.includes('失败') && !t.content.includes('错误')
-                            const icon = isSuccess ? (
-                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="#61C454" strokeWidth="1"/><path d="M3.5 6l1.5 1.5L8.5 4" stroke="#61C454" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                            ) : (
-                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="#EC5B56" strokeWidth="1"/><path d="M4.5 4.5l3 3M7.5 4.5l-3 3" stroke="#EC5B56" strokeWidth="1" strokeLinecap="round"/></svg>
-                            )
-                            const label = isRead ? '已读取' : isWrite ? '已创建' : isSearch ? '已搜索' : '已执行'
-                            return (
-                              <div key={ti} className="flex items-center gap-1.5 text-[11px] text-[#86909C]">
-                                {icon}
-                                <span className={isSuccess ? 'text-[#86909C]' : 'text-[#EC5B56]'}>{label}</span>
-                                <span className="text-[#C9CDD4] truncate max-w-[200px]">{t.name}</span>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
+                        {/* File changes summary */}
+                        {!groupIsLoading && allTools.length > 0 && combinedAnswer && (
+                          <div className="rounded-lg bg-[#F7F8FA] border border-[#F2F3F5] overflow-hidden">
+                            <div className="text-[11px] font-medium text-[#4E5969] px-3 py-2 border-b border-[#F2F3F5]">
+                              文件变更 ({allTools.length}个):
+                            </div>
+                            <div className="divide-y divide-[#F2F3F5]">
+                              {allTools.map((t, ti) => {
+                                const isCreate = t.name.includes('create') || t.name.includes('write')
+                                const label = isCreate ? '新建' : '修改'
+                                let filePath = ''
+                                const pathMatch = t.content.match(/(?:[A-Za-z]:[\\/][^\s]+|(?:\/[^\s]+)+\.\w+|(?:\S+[\\/])+\S+\.\w+)/)
+                                if (pathMatch) filePath = pathMatch[0]
+                                else filePath = t.name
+                                const fileName = filePath.split(/[/\\]/).pop() || filePath
+                                const ext = fileName.includes('.') ? fileName.split('.').pop()?.toLowerCase() || '' : ''
+                                return (
+                                  <div key={ti} className="flex items-center gap-2 px-3 py-2 text-[11px]">
+                                    <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[#C9CDD4]"></span>
+                                    <span className="text-[#C9CDD4] font-mono w-3 shrink-0">{isCreate ? '+' : '~'}</span>
+                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-medium text-[#86909C] shrink-0">{label}</span>
+                                    <span className="text-[#1D2129] truncate font-mono text-[11px]">{fileName}</span>
+                                    {ext && <span className="text-[#C9CDD4] text-[10px] shrink-0">.{ext}</span>}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
                   )
                 }
               }
@@ -2175,92 +1278,246 @@ export function App() {
             <div ref={endRef} />
           </div>
 
+          {/* Compacting status bar — WorkBuddy style */}
+          {compacting && (
+            <div className="flex items-center gap-2 px-5 py-1 text-[11px] text-[#86909C] bg-[#F7F8FA] border-t border-[#F2F3F5] select-none shrink-0">
+              <div className="flex items-center gap-1">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <circle cx="5" cy="5" r="4" stroke="#C9CDD4" strokeWidth="1.5" strokeDasharray="8 12">
+                    <animateTransform attributeName="transform" type="rotate" from="0 5 5" to="360 5 5" dur="1.5s" repeatCount="indefinite"/>
+                  </circle>
+                </svg>
+                <span>正在压缩上下文</span>
+              </div>
+              <span className="text-[#C9CDD4]">·</span>
+              <span className="text-[#C9CDD4]">优化 token</span>
+            </div>
+          )}
+
           {/* Input Area */}
           <div className="px-5 py-3 border-t border-[#F2F3F5] bg-white shrink-0">
-            {/* Scene Prompt Cards (when scene selected) */}
-            {s.activeScene && s.apiKey && (() => {
-              const scene = sceneData.find(sc => sc.id === s.activeScene)
-              if (!scene) return null
-              return (
-                <div className="mb-2">
-                  <div className="flex flex-wrap gap-1.5 items-center">
-                    {scene.prompts.map((p, i) => (
-                      <button key={i}
-                        onClick={() => { u({ activeScene: null }); send(scene.systemPrompt, p.text) }}
-                        className="px-3 py-1 rounded-full border border-[#E5E6EB] text-[11px] text-[#4E5969] bg-white hover:border-[#165DFF] hover:text-[#165DFF] cursor-pointer transition-colors">
-                        {p.label}
-                      </button>
+            {/* Pending task queue — WorkBuddy style */}
+            {s.pendingTasks.length > 0 && (
+              <div className="mb-2">
+                <details className="group" open>
+                  <summary className="flex items-center gap-1.5 text-[11px] text-[#86909C] cursor-pointer hover:text-[#4E5969] select-none mb-1 px-0.5">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="8" cy="8" r="6.5" />
+                      <path d="M8 4.5v4l2.5 1.5" />
+                    </svg>
+                    <span>等待中任务</span>
+                    <span className="ml-0.5 text-[10px] text-[#C9CDD4]">{s.pendingTasks.length}</span>
+                    <svg className="ml-auto text-[#E5E6EB] group-open:hidden" width="10" height="10" viewBox="0 0 8 8" fill="currentColor"><path d="M0 2h8L4 6z"/></svg>
+                    <svg className="ml-auto text-[#E5E6EB] hidden group-open:inline" width="10" height="10" viewBox="0 0 8 8" fill="currentColor"><path d="M2 0v8l4-4z"/></svg>
+                  </summary>
+                  <div className="space-y-1">
+                    {s.pendingTasks.map((task, idx) => (
+                      <div key={task.id}
+                        className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-white border border-[#E5E6EB] text-xs text-[#4E5969] group/task">
+                        <button onClick={() => {
+                          // Move to top
+                          const tasks = [...s.pendingTasks]
+                          const [item] = tasks.splice(idx, 1)
+                          u({ pendingTasks: [item, ...tasks] })
+                        }}
+                          className="text-[#C9CDD4] hover:text-[#165DFF] cursor-pointer flex-none transition-colors"
+                          title="置顶">
+                          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2l5 6h-3.5v6h-3V8H3l5-6z"/></svg>
+                        </button>
+                        <span className="flex-1 truncate">{task.text}</span>
+                        {task.attachments.length > 0 && (
+                          <span className="text-[10px] text-[#C9CDD4] flex-none">{task.attachments.length}个附件</span>
+                        )}
+                        <button onClick={() => {
+                          u({ pendingTasks: s.pendingTasks.filter(t => t.id !== task.id) })
+                        }}
+                          className="text-[#C9CDD4] hover:text-[#F53F3F] cursor-pointer flex-none transition-colors"
+                          title="删除">
+                          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+                        </button>
+                      </div>
                     ))}
-                    <button onClick={() => u({ activeScene: null })}
-                      className="px-2 py-1 rounded-full text-[11px] text-[#C9CDD4] hover:text-[#86909C] cursor-pointer">
-                      ✕
-                    </button>
                   </div>
-                </div>
-              )
-            })()}
-            {/* Mini Scene Selector — only in conversation, not welcome */}
-            {!s.activeScene && s.apiKey && s.msgs.length > 0 && (
-              <div className="mb-2 flex items-center gap-1 overflow-x-auto scrollbar-none">
-                <span className="text-[10px] text-[#C9CDD4] mr-1 shrink-0">场景：</span>
-                {sceneData.map(scene => (
-                  <button key={scene.id}
-                    onClick={() => u({ activeScene: scene.id })}
-                    className="px-2 py-0.5 rounded-full border border-[#F2F3F5] text-[10px] text-[#86909C] bg-white hover:border-[#C9CDD4] hover:text-[#4E5969] cursor-pointer transition-colors whitespace-nowrap">
-                    {scene.name}
-                  </button>
-                ))}
+                </details>
               </div>
             )}
-            <div className="bg-[#F7F8FA] border border-[#E5E6EB] rounded-xl p-3">
-              <textarea
-                className="w-full min-h-6 border-none bg-transparent text-[15px] text-[#1D2129] resize-none outline-none p-0 placeholder:text-[#C9CDD4]"
+            <div className="bg-[#F7F8FA] border border-[#E5E6EB] rounded-xl px-3 py-2"
+              onDragOver={e => { e.preventDefault(); e.stopPropagation() }}
+              onDrop={e => {
+                e.preventDefault(); e.stopPropagation()
+                const files = e.dataTransfer?.files
+                if (!files || files.length === 0) return
+                Array.from(files).forEach(file => {
+                  const reader = new FileReader()
+                  reader.onload = async () => {
+                    const base64 = (reader.result as string).split(',')[1]
+                    const result = await api()!.file.saveTemp(base64, file.name)
+                    if (result.success && result.path) {
+                      const attachType = file.type.startsWith('image/') ? 'image' : 'document'
+                      u({ attachments: [...s.attachments, { name: file.name, path: result.path, type: attachType, size: file.size }] })
+                    }
+                  }
+                  reader.readAsDataURL(file)
+                })
+              }}>
+              <div className="flex items-start gap-2 flex-wrap">
+                {/* Attachment cards — inline with text */}
+                {s.attachments.length > 0 && (
+                  <div className="flex flex-row flex-wrap gap-1.5">
+                    {s.attachments.map((att, idx) => (
+                      <div key={idx} className="flex-none flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white border border-[#E5E6EB]">
+                        <div className="flex-none w-5 h-5 rounded bg-[#165DFF] flex items-center justify-center text-white text-[8px] font-bold overflow-hidden">
+                          {att.type === 'image' ? (
+                            <img src={`file://${att.path}`} className="w-full h-full rounded object-cover" alt="" />
+                          ) : (
+                            <span>{att.name.includes('.') ? att.name.split('.').pop()?.slice(0,3).toUpperCase() : '?'}</span>
+                          )}
+                        </div>
+                        {att.type !== 'image' && (
+                          <span className="text-[11px] text-[#4E5969] max-w-[60px] truncate">{att.name}</span>
+                        )}
+                        <button onClick={() => u({ attachments: s.attachments.filter((_, j) => j !== idx) })}
+                          className="text-[10px] text-[#C9CDD4] hover:text-[#F53F3F] cursor-pointer leading-none">✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <textarea
+                  className="flex-1 min-w-[120px] min-h-6 border-none bg-transparent text-[15px] text-[#1D2129] resize-none outline-none p-0 placeholder:text-[#C9CDD4]"
                 placeholder={s.apiKey ? '告诉秘书你想做什么... 输入 / 使用快捷命令' : '请先设置 API Key'}
                 rows={1} value={s.input}
                 onChange={e => u({ input: e.target.value })}
                 onKeyDown={keyDown}
+                onPaste={e => {
+                  const items = e.clipboardData?.items
+                  if (!items) return
+                  Array.from(items).forEach(item => {
+                    if (item.type.startsWith('image/')) {
+                      e.preventDefault()
+                      const file = item.getAsFile()
+                      if (!file) return
+                      const reader = new FileReader()
+                      reader.onload = async () => {
+                        const base64 = (reader.result as string).split(',')[1]
+                        const ext = file.name.split('.').pop() || 'png'
+                        const fileName = `paste-${Date.now()}.${ext}`
+                        const result = await api()!.file.saveTemp(base64, fileName)
+                        if (result.success && result.path) {
+                          const attachType = file.type.startsWith('image/') ? 'image' : 'document'
+                          u({ attachments: [...s.attachments, { name: file.name || fileName, path: result.path, type: attachType, size: file.size }] })
+                        }
+                      }
+                      reader.readAsDataURL(file)
+                    }
+                  })
+                }}
                 onInput={e => { const el = e.target as HTMLTextAreaElement; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 200) + 'px' }} />
-              {/* Slash command hints — Chinese labels, English commands */}
-              {s.apiKey && (
-                <div className="flex flex-wrap gap-1 mt-1.5">
-                  {[
-                    { key: 'review', label: '审查' },
-                    { key: 'explain', label: '解释' },
-                    { key: 'fix', label: '修复' },
-                    { key: 'optimize', label: '优化' },
-                    { key: 'translate', label: '翻译' },
-                    { key: 'summarize', label: '总结' },
-                  ].map(cmd => (
-                    <button key={cmd.key} onClick={() => u({ input: '/' + cmd.key + ' ' })}
-                      className="px-1.5 py-0.5 rounded text-[10px] text-[#C9CDD4] hover:text-[#165DFF] hover:bg-[#E8F3FF] cursor-pointer transition-colors">
-                      /{cmd.label}
-                    </button>
-                  ))}
-                </div>
-              )}
+              </div>
               <div className="flex items-center gap-2 mt-2.5 pt-2.5 border-t border-[#F2F3F5]">
-                <select value={s.modelId} onChange={e => u({ modelId: e.target.value })}
-                  className="px-2.5 py-1 rounded-lg border border-transparent bg-transparent text-xs text-[#86909C] outline-none cursor-pointer hover:bg-[#F2F3F5]">
-                  {allModels.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </select>
-                <select value={s.perm} onChange={e => u({ perm: e.target.value as PermissionLevel })}
-                  className="px-2.5 py-1 rounded-lg border border-transparent bg-transparent text-xs text-[#86909C] outline-none cursor-pointer hover:bg-[#F2F3F5]">
-                  {perms.map(p => <option key={p.v} value={p.v}>{p.l}</option>)}
-                </select>
-                <select value={s.persona} onChange={e => u({ persona: e.target.value as any })}
-                  className="px-2.5 py-1 rounded-lg border border-transparent bg-transparent text-xs text-[#86909C] outline-none cursor-pointer hover:bg-[#F2F3F5]">
-                  <option value="office">日常办公</option>
-                  <option value="creative">设计创意</option>
-                </select>
-                <button onClick={() => u({ thinking: !s.thinking })}
-                  className={`px-2.5 py-1 rounded-lg border text-xs cursor-pointer transition-colors ${s.thinking ? 'border-[#165DFF] bg-[#E8F3FF] text-[#165DFF]' : 'border-transparent bg-transparent text-[#86909C] hover:bg-[#F2F3F5]'}`}>
-                  深度思考
-                </button>
+                {/* Slash commands — collapsible, WorkBuddy-style */}
+                {s.apiKey && (
+                  <div className="relative" ref={skillsRef}>
+                    <button onClick={() => setSkillsOpen(!skillsOpen)}
+                      className="px-2 py-1 rounded-lg text-xs text-[#86909C] hover:bg-[#F2F3F5] cursor-pointer transition-colors flex items-center gap-1 whitespace-nowrap">
+                      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M8 2v2.5M8 11.5V14M2 8h2.5M11.5 8H14M5 5l1.7 1.7M9.3 9.3L11 11M11 5L9.3 6.7M6.7 9.3L5 11"/><circle cx="8" cy="8" r="1.2"/></svg>
+                      <span>技能</span>
+                      <svg className={(skillsOpen ? 'rotate-180' : '') + ' transition-transform'} width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M0 2h8L4 6z"/></svg>
+                    </button>
+                    {skillsOpen && (
+                      <div className="absolute bottom-full left-0 mb-1.5 bg-white border border-[#E5E6EB] rounded-xl shadow-lg p-2 z-50 min-w-[180px]">
+                        <div className="flex flex-wrap gap-1">
+                          {[
+                            { key: 'review', label: '审查' },
+                            { key: 'explain', label: '解释' },
+                            { key: 'fix', label: '修复' },
+                            { key: 'optimize', label: '优化' },
+                            { key: 'translate', label: '翻译' },
+                            { key: 'summarize', label: '总结' },
+                          ].map(cmd => (
+                            <button key={cmd.key} onClick={() => { setSkillsOpen(false); u({ input: '/' + cmd.key + ' ' }) }}
+                              className="px-2 py-1 rounded-lg text-[11px] text-[#4E5969] hover:text-[#165DFF] hover:bg-[#E8F3FF] cursor-pointer transition-colors">
+                              /{cmd.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* File attachment button */}
+                <label className="px-2 py-1 rounded-lg text-xs text-[#86909C] hover:bg-[#F2F3F5] cursor-pointer transition-colors flex items-center gap-1" title="上传文件">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+                  <input type="file" multiple hidden
+                    accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.md"
+                    onChange={async e => {
+                      const files = e.target.files
+                      if (!files) return
+                      Array.from(files).forEach(file => {
+                        const reader = new FileReader()
+                        reader.onload = async () => {
+                          const base64 = (reader.result as string).split(',')[1]
+                          const result = await api()!.file.saveTemp(base64, file.name)
+                          if (result.success && result.path) {
+                            const attachType = file.type.startsWith('image/') ? 'image' : 'document'
+                            u({ attachments: [...s.attachments, { name: file.name, path: result.path, type: attachType, size: file.size }] })
+                          }
+                        }
+                        reader.readAsDataURL(file)
+                      })
+                      // Reset file input so same file can be selected again
+                      e.target.value = ''
+                    }} />
+                </label>
+                {/* Model selector — with dynamic font sizing based on name length */}
+                <div className="relative" ref={modelDropdownRef}>
+                  <button onClick={() => setModelOpen(!modelOpen)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg border border-transparent bg-transparent outline-none cursor-pointer hover:bg-[#F2F3F5] transition-colors">
+                    <div className="flex items-center gap-0.5">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#86909C" strokeWidth="1.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                      <span className="text-[12px] text-[#86909C] truncate max-w-[130px]">{selectedModelName}</span>
+                    </div>
+                  </button>
+                  {modelOpen && (
+                    <div className="absolute bottom-full left-0 mb-1 z-20 bg-white border border-[#E5E6EB] rounded-lg py-1 min-w-[160px] shadow-lg">
+                      <button onClick={() => { u({ modelId: 'auto' }); setModelOpen(false) }}
+                        className="w-full text-left px-3 py-1.5 text-[12px] hover:bg-[#F7F8FA] transition-colors flex items-center gap-2">
+                        <span className={`w-1.5 h-1.5 rounded-full ${s.modelId === 'auto' ? 'bg-[#1D2129]' : 'bg-transparent border border-[#C9CDD4]'}`}></span>
+                        <span className="font-medium text-[#1D2129]">Auto</span>
+                      </button>
+                      <div className="h-px bg-[#F2F3F5] mx-2 my-1" />
+                      {allModels.map(m => (
+                        <button key={m.id} onClick={() => { u({ modelId: m.id }); setModelOpen(false) }}
+                          className="w-full text-left px-3 py-1.5 text-[12px] hover:bg-[#F7F8FA] transition-colors flex items-center gap-2">
+                          <span className={`w-1.5 h-1.5 rounded-full ${s.modelId === m.id ? 'bg-[#1D2129]' : 'bg-transparent border border-[#C9CDD4]'}`}></span>
+                          <span className="text-[#4E5969]">{m.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <div className="ml-auto" />
-                <button onClick={send} disabled={s.loading || !s.input.trim()}
-                  className="w-8 h-8 rounded-lg bg-[#165DFF] text-white border-none flex items-center justify-center text-base disabled:bg-[#C9CDD4] disabled:cursor-not-allowed cursor-pointer hover:bg-[#0E4BD8] transition-colors">
-                  ↑
-                </button>
+                {s.loading ? (
+                  <button onClick={async () => {
+                    if (s.activeId) { await api()?.chat.abort(s.activeId) }
+                  }}
+                    className="w-8 h-8 rounded-full bg-[#1D2129] text-white border-none flex items-center justify-center cursor-pointer hover:bg-[#4E5969] transition-all duration-200"
+                    title="终止任务">
+                    {/* Stop / square icon */}
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                      <rect x="3" y="3" width="10" height="10" rx="1.5" />
+                    </svg>
+                  </button>
+                ) : (
+                  <button onClick={send} disabled={!s.input.trim()}
+                    className="w-8 h-8 rounded-full bg-[#1D2129] text-white border-none flex items-center justify-center disabled:bg-[#E5E6EB] disabled:text-[#C9CDD4] disabled:cursor-not-allowed cursor-pointer hover:bg-[#4E5969] transition-all duration-200"
+                    title="发送消息">
+                    {/* Paper plane icon (WorkBuddy style) */}
+                    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 10l17-8-5 17-4-8-8-1z" />
+                      <path d="M9 11l5-5" />
+                    </svg>
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -2323,9 +1580,11 @@ export function App() {
         apiKey={s.apiKey}
         userName={s.userName}
         perm={s.perm}
+        autoConfig={s.autoConfig}
         onApiKeyChange={(v: string) => u({ apiKey: v })}
         onNameChange={(v: string) => { u({ userName: v }); api()?.config.set('userName', v) }}
         onPermChange={(v: PermissionLevel) => u({ perm: v })}
+        onAutoConfigChange={(v: { defaultModel: string; imageModel: string }) => u({ autoConfig: v })}
         onClose={() => { api()?.config.set('apiKey', s.apiKey); u({ showSet: false }) }}
         onModelsChange={() => {
           api()?.models.list().then(cfg => {
@@ -2339,178 +1598,3 @@ export function App() {
     </div>
   )
 }
-
-function SettingsModal({ apiKey, userName, perm, onApiKeyChange, onNameChange, onPermChange, onClose, onModelsChange }: {
-  apiKey: string; userName: string; perm: PermissionLevel
-  onApiKeyChange: (v: string) => void; onNameChange: (v: string) => void
-  onPermChange: (v: PermissionLevel) => void; onClose: () => void
-  onModelsChange: () => void
-}) {
-  const [adding, setAdding] = useState(false)
-  const [newModel, setNewModel] = useState({ id: '', name: '', apiUrl: '', apiKey: '' })
-  const [modelList, setModelList] = useState<Array<{ id: string; name: string; apiUrl: string; apiKey?: string }>>([])
-
-  useEffect(() => {
-    const a = window.electronAPI as any
-    if (a?.models) a.models.list().then((cfg: any) => {
-      if (cfg?.models) setModelList(cfg.models)
-    }).catch(() => {})
-  }, [])
-
-  const addModel = async () => {
-    try {
-      const a = window.electronAPI as any
-      if (!newModel.id || !newModel.name || !newModel.apiUrl) return
-      const r = await a.models.add(newModel)
-      if (r?.success) {
-        setNewModel({ id: '', name: '', apiUrl: '', apiKey: '' })
-        setAdding(false)
-        const cfg = await a.models.list()
-        if (cfg?.models) setModelList(cfg.models)
-        onModelsChange()
-      } else {
-        alert(r?.error || '添加失败')
-      }
-    } catch (e: any) {
-      alert('添加失败: ' + (e?.message || '未知错误'))
-    }
-  }
-
-  const removeModel = async (id: string) => {
-    try {
-      const a = window.electronAPI as any
-      await a.models.remove(id)
-      const cfg = await a.models.list()
-      if (cfg?.models) setModelList(cfg.models)
-      onModelsChange()
-    } catch (e: any) {
-      alert('删除失败: ' + (e?.message || '未知错误'))
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-2xl p-6 w-[480px] max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <h2 className="text-lg font-semibold text-[#1D2129] mb-5">设置</h2>
-
-        <label className="text-sm text-[#4E5969] block mb-1.5">名字</label>
-        <input value={userName} onChange={e => onNameChange(e.target.value)}
-          className="w-full h-10 rounded-lg text-sm px-3 border border-[#E5E6EB] outline-none focus:border-[#165DFF] mb-4" />
-
-        <label className="text-sm text-[#4E5969] block mb-1.5">API Key</label>
-        <input type="password" value={apiKey} onChange={e => onApiKeyChange(e.target.value)} placeholder="sk-..."
-          className="w-full h-10 rounded-lg text-sm px-3 border border-[#E5E6EB] outline-none focus:border-[#165DFF] mb-4" />
-
-        <label className="text-sm text-[#4E5969] block mb-1.5">权限级别</label>
-        <select value={perm} onChange={e => onPermChange(e.target.value as PermissionLevel)}
-          className="w-full h-10 rounded-lg text-sm px-3 border border-[#E5E6EB] outline-none focus:border-[#165DFF] mb-4 bg-white">
-          <option value="default">默认权限</option>
-          <option value="full">完全访问</option>
-        </select>
-
-        {/* Model Management */}
-        <div className="border-t border-[#F2F3F5] pt-4 mt-4">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-medium text-[#4E5969]">模型管理</span>
-            <button onClick={() => setAdding(!adding)}
-              className="text-xs px-2 py-1 rounded bg-[#E8F3FF] text-[#165DFF] hover:bg-[#165DFF] hover:text-white transition-colors">
-              {adding ? '取消' : '+ 添加'}
-            </button>
-          </div>
-
-          {adding && (
-            <div className="bg-[#F7F8FA] rounded-lg p-3 mb-3 space-y-2">
-              <input value={newModel.name} onChange={e => setNewModel(prev => ({ ...prev, name: e.target.value }))}
-                placeholder="显示名称（如: OpenAI GPT-4）" className="w-full h-9 rounded text-xs px-2.5 border border-[#E5E6EB] outline-none focus:border-[#165DFF]" />
-              <input value={newModel.id} onChange={e => setNewModel(prev => ({ ...prev, id: e.target.value }))}
-                placeholder="模型 ID（如: gpt-4o）" className="w-full h-9 rounded text-xs px-2.5 border border-[#E5E6EB] outline-none focus:border-[#165DFF]" />
-              <input value={newModel.apiUrl} onChange={e => setNewModel(prev => ({ ...prev, apiUrl: e.target.value }))}
-                placeholder="API 端点（如: https://api.openai.com/v1）" className="w-full h-9 rounded text-xs px-2.5 border border-[#E5E6EB] outline-none focus:border-[#165DFF]" />
-              <input value={newModel.apiKey} onChange={e => setNewModel(prev => ({ ...prev, apiKey: e.target.value }))}
-                type="password"
-                placeholder="API Key（可选，留空则使用全局 Key）" className="w-full h-9 rounded text-xs px-2.5 border border-[#E5E6EB] outline-none focus:border-[#165DFF]" />
-              <button onClick={addModel}
-                className="w-full h-9 rounded bg-[#165DFF] text-white text-xs font-medium hover:bg-[#0E4BD8]">确认添加</button>
-            </div>
-          )}
-
-          <div className="space-y-1">
-            {modelList.map(m => (
-              <div key={m.id} className="flex items-center justify-between py-2 px-2 rounded hover:bg-[#F7F8FA] text-[13px]">
-                <div className="flex-1 min-w-0">
-                  <span className="text-[#1D2129]">{m.name}</span>
-                  <span className="text-[10px] text-[#C9CDD4] ml-2">{m.id}</span>
-                  {m.apiKey && <span className="text-[10px] text-[#61C454] ml-2" title="已配置独立 API Key">🔑</span>}
-                </div>
-                <button onClick={() => removeModel(m.id)}
-                  className="text-[10px] text-[#C9CDD4] hover:text-[#EC5B56] px-1">删除</button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex justify-end gap-3 mt-5">
-          <button onClick={onClose}
-            className="px-5 py-2 rounded-lg text-sm text-[#4E5969] border border-[#E5E6EB] hover:bg-[#F7F8FA]">关闭</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function MemoryModal({ onClose }: { onClose: () => void }) {
-  const [data, setData] = React.useState<{ factsCount: number; prefsCount: number; projects: any[]; todos: any[] } | null>(null)
-  React.useEffect(() => {
-    const a = window.electronAPI
-    if (a?.progress) a.progress.get().then((d: any) => setData(d)).catch(() => {})
-  }, [])
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-[420px] max-h-[70vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-semibold text-[#1D2129]">CoreBuddy 的记忆</h3>
-          <button onClick={onClose} className="w-6 h-6 rounded flex items-center justify-center text-[#C9CDD4] hover:text-[#4E5969] hover:bg-[#F7F8FA]">✕</button>
-        </div>
-        {!data ? (
-          <p className="text-sm text-[#86909C]">加载中...</p>
-        ) : (
-          <div className="space-y-4">
-            <div className="bg-[#F7F8FA] rounded-lg p-3">
-              <div className="text-xs text-[#86909C] mb-1">已记住</div>
-              <div className="flex gap-4">
-                <div><span className="text-lg font-semibold text-[#165DFF]">{data.factsCount}</span><span className="text-xs text-[#C9CDD4] ml-1">条事实</span></div>
-                <div><span className="text-lg font-semibold text-[#165DFF]">{data.prefsCount}</span><span className="text-xs text-[#C9CDD4] ml-1">条偏好</span></div>
-              </div>
-            </div>
-            {data.projects?.length > 0 && (
-              <div>
-                <div className="text-xs font-medium text-[#4E5969] mb-1">项目</div>
-                {data.projects.map((p: any, i: number) => (
-                  <div key={i} className="flex justify-between py-1.5 border-b border-[#F2F3F5] text-[13px]">
-                    <span className="text-[#1D2129]">{p.name}</span>
-                    <span className="text-xs text-[#86909C]">{p.status}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {data.todos?.length > 0 && (
-              <div>
-                <div className="text-xs font-medium text-[#4E5969] mb-1">待办</div>
-                {data.todos.filter((t: any) => !t.done).map((t: any, i: number) => (
-                  <div key={i} className="flex items-center gap-2 py-1 text-[13px] text-[#1D2129]">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#C9CDD4] shrink-0" />
-                    <span>{t.text}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {data.factsCount === 0 && data.prefsCount === 0 && (
-              <p className="text-sm text-[#C9CDD4] text-center py-4">还没有记忆。用久了就有了。</p>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-

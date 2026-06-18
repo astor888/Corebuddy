@@ -3,11 +3,11 @@
 
 import { BrowserWindow } from 'electron'
 import { buildSystemPrompt } from './system-prompt'
-import type { PersonaMode } from './system-prompt'
-import { getTool, getAllTools, checkPermission, Tool, setApiConfig } from './tool-registry'
+import type { PersonaMode, ExecutionMode } from './system-prompt'
+import { getTool, getAllTools, checkPermission, Tool, setApiConfig, getOpenAITools } from './tool-registry'
 import type { PermissionMode } from './tool-registry'
 import { addMessage, getContext } from './context'
-import { recordDailyLog } from './memory'
+import { recordDailyLog, updateProfile, addTodo } from './memory'
 import { runPreToolHooks, runPostToolHooks, runStopHooks } from './hooks'
 import { getActiveSkillsPrompt } from './plugins'
 
@@ -25,6 +25,7 @@ export interface AgentLoopConfig {
   apiKey: string
   model: string
   persona?: PersonaMode
+  executionMode?: ExecutionMode
   permLevel?: number
   permissionMode?: PermissionMode
   thinkingEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -40,14 +41,29 @@ export interface AgentLoopConfig {
   userName?: string
   /** API base URL (e.g. https://api.deepseek.com/v1 or https://api.openai.com/v1) */
   apiUrl?: string
+  /** 用户附带的文件路径列表（图片/文档） */
+  attachments?: Array<{
+    type: string   // 'image' | 'document'
+    name: string
+    path: string   // 文件在磁盘上的路径
+  }>
 }
 
 const DEFAULT_CONFIG: Required<AgentLoopConfig> = {
   apiKey: '',
   model: 'deepseek-v4-pro',
+  persona: 'office',
+  executionMode: 'craft',
   permLevel: 3,
   permissionMode: 'default',
   thinkingEffort: 'medium',
+  onRequestPermission: async () => false,
+  isAborted: () => false,
+  sender: undefined as any,
+  scenePrompt: '',
+  userName: '用户',
+  apiUrl: 'https://api.deepseek.com/v1',
+  attachments: [],
 }
 
 export async function agentLoop(
@@ -61,18 +77,27 @@ export async function agentLoop(
   const send = (channel: string, data?: any) => {
     const payload = data && typeof data === 'object' && !Array.isArray(data) ? { ...data, convId } : { value: data, convId }
     for (const win of BrowserWindow.getAllWindows()) {
-      try { win.webContents.send(channel, payload) } catch {}
+      try { win.webContents.send(channel, payload) } catch (err) {
+        console.error(`[IPC] webContents.send(${channel}) 失败:`, err)
+      }
     }
   }
 
   // Set API config for sub-agent spawning
-  setApiConfig({ apiKey: cfg.apiKey, model: cfg.model })
+  setApiConfig({ apiKey: cfg.apiKey, model: cfg.model, apiUrl: cfg.apiUrl })
 
   // 1. Record user message
   addMessage(convId, { role: 'user', content: userMessage })
 
   // 2. Build system prompt + inject activated skills
-  const systemPrompt = buildSystemPrompt(config.persona || 'office', cfg.userName)
+  let systemPrompt: string
+  try {
+    systemPrompt = buildSystemPrompt(cfg.persona || 'office', cfg.userName, cfg.executionMode || 'craft')
+  } catch (e: any) {
+    console.error('[AGENT-LOOP] buildSystemPrompt crashed:', e?.message || e, e?.stack)
+    send('chat:streamError', `系统提示构建失败: ${e?.message || e}`)
+    return
+  }
   const activeSkills = getActiveSkillsPrompt(userMessage)
 
   // 3. Build message array for LLM
@@ -93,18 +118,49 @@ export async function agentLoop(
     ...contextMsgs,
   ]
 
+  // ★ 注入附件信息到对话 ★
+  // All attachments (images + documents) go as text notes — LLM uses tools to process
+  // Note: DeepSeek V4 doesn't support native multimodal image_url format yet
+  if (cfg.attachments && cfg.attachments.length > 0) {
+    const notes = cfg.attachments.map((a: any) => {
+      if (a.type === 'image') {
+        return `- 图片附件: ${a.path}（如需分析图片内容，请使用 read_image_content 工具）`
+      }
+      return `- 文件附件: ${a.path}（如需读取文件内容，请使用 read_document 工具）`
+    }).join('\n')
+    
+    // Replace the last user message (which was loaded from context at step 3)
+    // with the attachment-augmented version to avoid duplicate messages
+    const lastUserIdx = messages.map(m => m.role).lastIndexOf('user')
+    if (lastUserIdx >= 0) {
+      messages[lastUserIdx] = { role: 'user', content: `${userMessage}\n\n${notes}` }
+    } else {
+      messages.push({ role: 'user', content: `${userMessage}\n\n${notes}` })
+    }
+  }
+
   // 4. Core loop: LLM → Parse tools → Execute (parallel if safe) → Repeat
   let turnCount = 0
   let totalTools = 0
   let artifactsCreated = 0
   const MAX_TOOL_TURNS = 5
+  const HARD_TIMEOUT_MS = 600_000 // WorkBuddy-style: 600s hard timeout
+  const startTime = Date.now()
 
   while (turnCount < MAX_TOOL_TURNS) {
+    try {
     // Check if aborted (user cancelled or navigated away)
     if (cfg.isAborted?.()) {
       send('chat:streamDone', { toolCount: 0, artifactCount: 0, aborted: true })
       recordDailyLog(convId, userMessage, '(user aborted)')
       runStopHooks(convId)
+      return
+    }
+    // Hard timeout guard — prevent runaway loops
+    if (Date.now() - startTime > HARD_TIMEOUT_MS) {
+      send('chat:streamError', '任务执行超时（600秒），已自动终止')
+      send('chat:streamDone', { toolCount: totalTools, artifactCount: artifactsCreated, timeout: true })
+      recordDailyLog(convId, userMessage, '(timeout)')
       return
     }
     turnCount++
@@ -113,7 +169,12 @@ export async function agentLoop(
     // Layer 1: Tool results truncated in executeAndLog
     // Layer 2: LLM-powered compaction when >80% (51K) of 64K context used
     // Layer 3: Last-resort trim when >90% (57K) — keeps system + last 5 msgs
-    messages = await compactMessages(messages, cfg)
+    send('chat:compacting', { active: true })
+    try {
+      messages = await compactMessages(messages, cfg)
+    } finally {
+      send('chat:compacting', { active: false })
+    }
 
     // Call LLM
     const { content, toolCalls } = await callLLM(messages, cfg, send)
@@ -132,6 +193,20 @@ export async function agentLoop(
       send('chat:streamDone', { toolCount: 0, artifactCount: 0 })
       recordDailyLog(convId, userMessage, fullContent)
       const stopNotes = runStopHooks(convId)
+      // ★ 工作完成自省: 如果本次有工具调用过（前面的轮次），保存学习笔记
+      if (totalTools > 0) {
+        await saveReflection(convId, userMessage, fullContent, cfg)
+      }
+      return
+    }
+
+    // ★ Ask 模式: 拒绝执行任何工具，只返回文字回答
+    if (cfg.executionMode === 'ask') {
+      const warn = `\n\n> ⚠️ 当前为 Ask（仅问答）模式，已忽略工具调用请求。如需执行操作，请切换到 Craft 或 Plan 模式。`
+      addMessage(convId, { role: 'assistant', content: fullContent + warn })
+      send('chat:streamChunk', warn)
+      send('chat:streamDone', { toolCount: 0, artifactCount: 0 })
+      recordDailyLog(convId, userMessage, fullContent + '\n(ask mode - tools skipped)')
       return
     }
 
@@ -198,15 +273,102 @@ export async function agentLoop(
       if (r.artifactPath) artifactsCreated++
     }
 
-    // Feed result back for next turn
-    if (turnCount >= MAX_TOOL_TURNS) {
-      messages.push({ role: 'assistant', content: fullContent })
+    } catch (loopErr: unknown) {
+      const errMsg = loopErr instanceof Error ? (loopErr?.message || String(loopErr)) : String(loopErr)
+      const errStack = loopErr instanceof Error ? (loopErr?.stack?.split('\n').slice(0, 3).join('\n') || '') : ''
+      console.error('[AGENT-LOOP] Turn error:', errMsg, '\n' + errStack)
+      send('chat:streamError', `执行异常: ${errMsg}\n\n📍 ${errStack}`)
+      send('chat:streamDone', { toolCount: totalTools, artifactCount: artifactsCreated })
+      recordDailyLog(convId, userMessage, `(loop error: ${errMsg})`)
+      return
     }
   }
 
   send('chat:streamDone', { toolCount: totalTools, artifactCount: artifactsCreated })
   recordDailyLog(convId, userMessage, '(multi-turn completed)')
   const stopNotes = runStopHooks(convId)
+  // ★ 工作完成自省: 多轮工具调用后保存学习笔记
+  if (totalTools > 0) {
+    await saveReflection(convId, userMessage, '', cfg)
+  }
+}
+
+/**
+ * ★ 工作完成自省 — 将本次任务的关键发现保存到记忆
+ * 用 LLM 快速分析：任务做了什么？用户有什么偏好？学到了什么？
+ */
+async function saveReflection(
+  convId: string,
+  userMsg: string,
+  finalResponse: string,
+  cfg: Required<AgentLoopConfig>
+): Promise<void> {
+  try {
+    const recentContext = getContext(convId, 8)
+    const recentText = recentContext
+      .filter(m => m.role !== 'system')
+      .slice(-6)
+      .map(m => `[${m.role}]: ${m.content.slice(0, 300)}`)
+      .join('\n\n')
+
+    const reflectionPrompt = [
+      { role: 'system' as const, content: `你是 CoreBuddy 的"自省模块"。分析最近的对话，从以下维度提取可持久化的信息：
+
+1. 用户透露了任何偏好、格式要求、命名规则吗？
+2. 有没有创建或修改了项目？项目状态是什么？
+3. 用户有没有提到待办事项？
+4. 有什么关键决策需要记住？
+
+如果以上都没有，输出"无"。如果发现了，用以下 JSON 格式输出（每行一条,每个维度最多一条）：
+
+FACT: 关键事实
+PREFERENCE: 偏好
+PROJECT: 项目名:项目状态
+TODO: 待办事项描述` },
+      { role: 'user' as const, content: `最近对话:\n${recentText}` },
+    ]
+
+    const apiBase = cfg.apiUrl || 'https://api.deepseek.com/v1'
+    const resp = await fetch(`${apiBase}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${cfg.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages: reflectionPrompt,
+        stream: false,
+        max_tokens: 300,
+        temperature: 0.3,
+      }),
+    })
+
+    if (!resp.ok) return // Fail silently — reflection is non-critical
+
+    const data: any = await resp.json()
+    const reflection = data.choices?.[0]?.message?.content?.trim() || ''
+
+    if (!reflection || reflection === '无') return
+
+    // Parse reflection into memory actions
+    const lines = reflection.split('\n')
+    const activities: string[] = []
+    let bgUpdated = false
+    for (const line of lines) {
+      const t = line.trim()
+      if (t.startsWith('FACT:') || t.startsWith('PREFERENCE:')) {
+        activities.push(t.startsWith('FACT:') ? t.slice(5).trim() : t.slice(11).trim())
+        bgUpdated = true
+      }
+      else if (t.startsWith('TODO:')) addTodo(t.slice(5).trim())
+    }
+    if (bgUpdated && activities.length > 0) {
+      updateProfile({ recentActivities: activities })
+    }
+  } catch {
+    // 自省失败不影响主流程
+  }
 }
 
 async function executeAndLog(
@@ -267,11 +429,11 @@ async function executeAndLog(
   try {
     const raw = await tool.execute(tc.params)
     result = typeof raw === 'string' ? raw : JSON.stringify(raw)
-  } catch (e: any) {
-    const errMsg = `工具 ${tool.name} 执行失败: ${e?.message || e}`
-    addMessage(convId, { role: 'tool', content: errMsg })
+  } catch (e: unknown) {
+    const errMsg = e instanceof Error ? (e?.message || String(e)) : String(e)
+    addMessage(convId, { role: 'tool', content: `工具 ${tool.name} 执行失败: ${errMsg}` })
     return {
-      assistantMsg: { role: 'assistant', content: `[${tc.action} 执行出错: ${e?.message || e}]` },
+      assistantMsg: { role: 'assistant', content: `[${tc.action} 执行出错: ${errMsg}]` },
       toolMsg: { role: 'user', content: `[Tool "${tc.action}" error: ${errMsg}]` },
     }
   }
@@ -312,7 +474,8 @@ async function executeAndLog(
   }
 }
 
-// LLM Call with streaming
+// LLM Call with streaming — supports both text-block tool parsing AND native Function Calling
+// DeepSeek V4 / OpenAI compatible
 async function callLLM(
   messages: AgentMessage[],
   cfg: Required<AgentLoopConfig>,
@@ -320,21 +483,28 @@ async function callLLM(
 ): Promise<{ content: string; toolCalls: ToolCall[] }> {
   const requestBody: any = {
     model: cfg.model,
-    messages,
     stream: true,
     max_tokens: 8192,
     temperature: 0.7,
   }
 
+  // Always inject tools — AI self-judges whether to use them
+  requestBody.tools = getOpenAITools(cfg.persona)
+  requestBody.tool_choice = 'auto'
+
   // Claude Code thinking mode support (DeepSeek reasoning_effort)
   if (cfg.thinkingEffort && cfg.thinkingEffort !== 'medium') {
     const thinkingInstruction = getThinkingInstruction(cfg.thinkingEffort)
     const newMessages = [...messages]
-    newMessages[0] = {
-      ...newMessages[0],
-      content: newMessages[0].content + '\n\n' + thinkingInstruction,
+    if (typeof newMessages[0]?.content === 'string') {
+      newMessages[0] = {
+        ...newMessages[0],
+        content: newMessages[0].content + '\n\n' + thinkingInstruction,
+      }
     }
     requestBody.messages = newMessages
+  } else {
+    requestBody.messages = messages
   }
 
   try {
@@ -364,6 +534,14 @@ async function callLLM(
     const decoder = new TextDecoder()
     let content = '', buffer = ''
 
+    // ★ Function Calling accumulator ★
+    // Accumulate tool_calls deltas by index across streaming chunks
+    const accumulatedToolCalls: Map<number, {
+      id: string
+      type: string
+      function: { name: string; arguments: string }
+    }> = new Map()
+
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -374,21 +552,94 @@ async function callLLM(
         const t = line.trim()
         if (!t || !t.startsWith('data: ')) continue
         const d = t.slice(6)
-        if (d === '[DONE]') return { content, toolCalls: parseTools(content) }
+        if (d === '[DONE]') {
+          // Build tool calls from accumulated function calling data
+          const fcToolCalls: ToolCall[] = []
+          for (const [_, tc] of accumulatedToolCalls) {
+            if (tc.function?.name && tc.function?.arguments) {
+              try {
+                const params = JSON.parse(tc.function.arguments)
+                fcToolCalls.push({ action: tc.function.name, params })
+              } catch {
+                // Function arguments not valid JSON yet — skip
+              }
+            }
+          }
+          // Merge: text-block tool calls + function-calling tool calls
+          const textToolCalls = parseTools(content)
+          const merged = [...textToolCalls, ...fcToolCalls]
+          // Deduplicate by action name (prefer function calling result)
+          const seen = new Set<string>()
+          const deduped = merged.filter(tc => {
+            const key = tc.action
+            if (seen.has(key)) return false
+            seen.add(key)
+            return true
+          })
+          return { content, toolCalls: deduped }
+        }
         try {
           const p = JSON.parse(d)
-          const c = p.choices?.[0]?.delta?.content || ''
+          const delta = p.choices?.[0]?.delta
+          if (!delta) continue
+
+          // Handle text content
+          const c = delta.content || ''
           if (c) {
             content += c
             send('chat:streamChunk', c)
+          }
+
+          // ★ Handle Function Calling tool_calls in streaming delta ★
+          if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+            for (const tcDelta of delta.tool_calls) {
+              const idx = tcDelta.index ?? 0
+              let existing = accumulatedToolCalls.get(idx)
+              if (!existing) {
+                existing = { id: '', type: 'function', function: { name: '', arguments: '' } }
+                accumulatedToolCalls.set(idx, existing)
+              }
+              if (tcDelta.id && !existing.id) existing.id = tcDelta.id
+              if (tcDelta.type && !existing.type) existing.type = tcDelta.type
+              if (tcDelta.function) {
+                // Name: only set on first delta (DeepSeek may repeat full name in every chunk)
+                // Arguments: accumulate incrementally across chunks
+                if (tcDelta.function.name && !existing.function.name) {
+                  existing.function.name = tcDelta.function.name
+                }
+                if (tcDelta.function.arguments) existing.function.arguments += tcDelta.function.arguments
+              }
+            }
           }
         } catch {}
       }
     }
 
-    return { content, toolCalls: parseTools(content) }
-  } catch (e: any) {
-    send('chat:streamError', `网络错误: ${e.message}`)
+    // Fallback — parse text-based tool blocks, deduplicate by action name
+    const textToolCalls = parseTools(content)
+    const fcToolCalls: ToolCall[] = []
+    for (const [_, tc] of accumulatedToolCalls) {
+      if (tc.function?.name && tc.function?.arguments) {
+        try {
+          const params = JSON.parse(tc.function.arguments)
+          fcToolCalls.push({ action: tc.function.name, params })
+        } catch {}
+      }
+    }
+    const merged = [...textToolCalls, ...fcToolCalls]
+    const seen = new Set<string>()
+    const deduped = merged.filter(tc => {
+      const key = tc.action
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    return { content, toolCalls: deduped }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    const stack = e instanceof Error ? (e.stack?.split('\n').slice(0, 3).join('\n') || '') : ''
+    console.error('[AGENT-LOOP] callLLM error:', msg, '\n' + stack)
+    send('chat:streamError', `网络错误: ${msg}\n\n📍 ${stack}`)
     return { content: '', toolCalls: [] }
   }
 }
@@ -466,7 +717,7 @@ async function compactMessages(
   // Under 80% — no action needed
   if (totalTokens < COMPACT_THRESHOLD) return msgs
 
-  const KEEP_RECENT = 5
+  const KEEP_RECENT = 8
   let compactionAttempted = false
 
   // Layer 2: LLM-powered compaction
@@ -528,17 +779,17 @@ async function summarizeMessages(
   msgs: AgentMessage[],
   cfg: Required<AgentLoopConfig>
 ): Promise<string> {
-  // Build compacted representation: keep 800 chars per message, label tool results clearly
+  // Build compacted representation: keep 1500 chars per message, label tool results clearly
   const conversation = msgs.map(m => {
-    const content = m.content.slice(0, 800) + (m.content.length > 800 ? '...(省略)' : '')
-    // Tool results are stored as user role — detect and label properly
-    const isToolResult = m.role === 'user' && /^\[.+\s*(结果|result)/i.test(content)
+    const content = m.content.slice(0, 1500) + (m.content.length > 1500 ? '...(省略)' : '')
+    // Detect tool results: role=tool, or role=user with tool/result markers
+    const isToolResult = m.role === 'tool' || (m.role === 'user' && /^\[(Tool|工具|附件|img)/.test(content))
     const label = isToolResult ? 'tool_result' : m.role
     return `[${label}]: ${content}`
   }).join('\n\n')
 
   const summaryPrompt = [
-    { role: 'system' as const, content: '你是一个对话摘要器。用3-5句中文精炼总结以下对话的关键信息。只包含：用户的核心请求、做出的决策、执行的操作和结果。不要包含技术细节，只保留对后续对话有用的上下文。直接输出摘要，不要说"以下是摘要"。' },
+    { role: 'system' as const, content: '你是一个对话摘要器。用3-5句精炼总结以下对话。必须保留：用户的核心需求、决策内容、执行了哪些工具及关键结果、项目/文件/技术要点。省略：寒暄、重复内容、调试过程中的中间步骤。输出直接给后续对话使用，不要说"以下是摘要"。' },
     { role: 'user' as const, content: `<conversation>\n${conversation}\n</conversation>\n\n请总结以上对话。` },
   ]
 
@@ -550,7 +801,8 @@ async function summarizeMessages(
     temperature: 0.3,
   })
 
-  const resp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+  const apiBase = cfg.apiUrl || 'https://api.deepseek.com/v1'
+  const resp = await fetch(`${apiBase}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

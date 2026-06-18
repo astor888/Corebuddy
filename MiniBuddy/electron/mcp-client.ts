@@ -127,23 +127,27 @@ export async function connectOneMcpServer(
     if (builtinMap[name]) {
       // Built-in: register tools directly from the main process
       tools = builtinMap[name](resolved.env || {})
+      serverTools[name] = tools
+      for (const tool of tools) {
+        registerBuiltinMcpTool(name, tool)
+      }
     } else {
       // External: spawn subprocess via fork/spawn
       tools = await connectMcpServer(name, resolved)
-    }
-
-    serverTools[name] = tools
-    for (const tool of tools) {
-      registerBuiltinMcpTool(name, tool)
+      serverTools[name] = tools
+      for (const tool of tools) {
+        registerMcpTool(name, tool)
+      }
     }
     serverStatus[name] = 'connected'
     console.log(`MCP connected: ${name}, ${tools.length} tools`)
     return `${name} (${tools.length} tools)`
-  } catch (e: any) {
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
     serverStatus[name] = 'error'
     serverTools[name] = []
-    console.error(`MCP connection failed: ${name}: ${e.message}`)
-    return `${name} (连接失败: ${e.message})`
+    console.error(`MCP connection failed: ${name}: ${msg}`)
+    return `${name} (连接失败: ${msg})`
   }
 }
 
@@ -171,8 +175,9 @@ function registerBuiltinMcpTool(serverName: string, mcpTool: McpTool & { handler
     execute: async (params) => {
       try {
         return await mcpTool.handler(params)
-      } catch (e: any) {
-        return `工具调用失败: ${e.message}`
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
+        return `工具调用失败: ${msg}`
       }
     },
   }
@@ -318,7 +323,7 @@ async function connectMcpServer(
         }
 
         resolve(tools)
-      } catch (e: any) {
+      } catch (e: unknown) {
         proc.kill()
         reject(e)
       }
@@ -407,9 +412,10 @@ function registerMcpTool(serverName: string, mcpTool: McpTool) {
             })
             tproc.kill()
             resolve(JSON.stringify(result, null, 2))
-          } catch (e: any) {
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e)
             tproc.kill()
-            resolve(`MCP tool call failed: ${e.message}`)
+            resolve(`MCP tool call failed: ${msg}`)
           }
         })()
       })

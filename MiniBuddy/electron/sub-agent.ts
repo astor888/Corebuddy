@@ -12,6 +12,7 @@ export interface ToolDef {
 export interface SubAgentConfig {
   apiKey: string
   model: string
+  apiUrl?: string
   task: string
   context?: string
   tools: ToolDef[]  // Sub-agent's available tools (pre-filtered by caller)
@@ -27,7 +28,7 @@ interface SubAgentMessage {
  * Returns the agent's final response.
  */
 export async function spawnSubAgent(config: SubAgentConfig): Promise<string> {
-  const { apiKey, model, task, context, tools } = config
+  const { apiKey, model, task, context, tools, apiUrl } = config
 
   // Sub-agents only use tools provided by caller (L1-L2, no spawn_agent)
   const sysPrompt = buildSubAgentPrompt(tools, task, context)
@@ -44,7 +45,7 @@ export async function spawnSubAgent(config: SubAgentConfig): Promise<string> {
   while (turnCount < MAX_TURNS) {
     turnCount++
 
-    const { content, toolCalls } = await callLLM(messages, apiKey, model)
+    const { content, toolCalls } = await callLLM(messages, apiKey, model, apiUrl)
 
     if (!content && toolCalls.length === 0) {
       return '(子代理无响应)'
@@ -69,8 +70,9 @@ export async function spawnSubAgent(config: SubAgentConfig): Promise<string> {
       let result: string
       try {
         result = await tool.execute(tc.params)
-      } catch (e: any) {
-        result = `工具执行失败: ${e.message}`
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
+        result = `工具执行失败: ${msg}`
       }
 
       messages.push(
@@ -118,10 +120,12 @@ If a tool fails, try an alternative. If you cannot complete the task, explain wh
 async function callLLM(
   messages: SubAgentMessage[],
   apiKey: string,
-  model: string
+  model: string,
+  apiUrl?: string
 ): Promise<{ content: string; toolCalls: Array<{ action: string; params: any }> }> {
   try {
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    const baseUrl = apiUrl || 'https://api.deepseek.com/v1'
+    const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -157,8 +161,9 @@ async function callLLM(
     }
 
     return { content, toolCalls }
-  } catch (e: any) {
-    console.error('Sub-agent LLM call failed:', e.message)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error('Sub-agent LLM call failed:', msg)
     return { content: '', toolCalls: [] }
   }
 }

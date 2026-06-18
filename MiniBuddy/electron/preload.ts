@@ -24,8 +24,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
   chat: {
-    sendMessage: (text: string, modelId: string, convId: string, permLevel?: number, persona?: string, scenePrompt?: string, userName?: string) =>
-      ipcRenderer.invoke('chat:sendMessage', text, modelId, convId, permLevel, persona, scenePrompt, userName),
+    sendMessage: (text: string, modelId: string, convId: string, permLevel?: number, persona?: string, scenePrompt?: string, userName?: string, executionMode?: string, attachments?: Array<{type: string; name: string; data?: string; path?: string; size?: number}>) => {
+      // Sanitize attachments: ensure all values are primitive/cloneable
+      const safeAttachments = attachments?.map(a => ({
+        type: String(a.type || ''),
+        name: String(a.name || ''),
+        path: String(a.path || ''),
+        size: Number(a.size) || 0,
+        data: a.data ? String(a.data) : undefined,
+      }))
+      return ipcRenderer.invoke('chat:sendMessage', text, modelId, convId, permLevel, persona, scenePrompt, userName, executionMode, safeAttachments)
+    },
     abort: (convId: string) => ipcRenderer.invoke('chat:abort', convId),
     feedback: (convId: string, msgId: string, type: 'like' | 'dislike', content: string) =>
       ipcRenderer.invoke('chat:feedback', convId, msgId, type, content),
@@ -64,6 +73,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('chat:toolAction', h)
       return () => ipcRenderer.removeListener('chat:toolAction', h)
     },
+    onCompacting: (cb: (data: { active: boolean; convId?: string }) => void) => {
+      const h = (_: any, d: any) => cb(d)
+      ipcRenderer.on('chat:compacting', h)
+      return () => ipcRenderer.removeListener('chat:compacting', h)
+    },
   },
   progress: {
     get: () => ipcRenderer.invoke('progress:get'),
@@ -93,12 +107,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   skills: {
     list: () => ipcRenderer.invoke('skills:list'),
+    marketplace: () => ipcRenderer.invoke('skills:marketplace'),
+    search: (query: string) => ipcRenderer.invoke('skills:search', query),
+    install: (id: string) => ipcRenderer.invoke('skills:install', id),
+    uninstall: (id: string) => ipcRenderer.invoke('skills:uninstall', id),
+  },
+  connectors: {
+    list: () => ipcRenderer.invoke('connectors:list'),
+    connect: (id: string, config: Record<string, string>) => ipcRenderer.invoke('connectors:connect', id, config),
+    disconnect: (id: string) => ipcRenderer.invoke('connectors:disconnect', id),
+    status: () => ipcRenderer.invoke('connectors:status'),
   },
   oauth: {
     start: (service: string, config: any) => ipcRenderer.invoke('oauth:start', service, config),
     port: () => ipcRenderer.invoke('oauth:port'),
   },
   file: {
+    saveTemp: (data: string, fileName: string) => ipcRenderer.invoke('file:saveTemp', data, fileName),
     open: (filePath: string) => ipcRenderer.invoke('file:open', filePath),
     showInFolder: (filePath: string) => ipcRenderer.invoke('file:showInFolder', filePath),
     read: (filePath: string) => ipcRenderer.invoke('file:read', filePath),

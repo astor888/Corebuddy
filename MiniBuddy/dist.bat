@@ -1,44 +1,52 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-set "NODE=%~dp0runtime\node\node.exe"
-set "NPM=%~dp0runtime\node\npm.cmd"
+
+:: Check Node.js
+where node >nul 2>nul
+if %errorlevel% neq 0 (
+    echo ERROR: Node.js not found. Install from https://nodejs.org
+    pause
+    exit /b 1
+)
 
 echo === CoreBuddy Package ===
-echo Using Node.js: %NODE%
 echo.
 
-if exist "node_modules\" (
-    echo [skip] node_modules already exists
-) else (
-    echo [1/4] Install dependencies (first time, 3-5 min)...
-    call "%NPM%" install
+if not exist "node_modules\" (
+    echo [1/4] Installing dependencies...
+    call npm install
     if %errorlevel% neq 0 (
         echo ERROR: npm install failed!
         pause
         exit /b 1
     )
+) else (
+    echo [skip] node_modules exists
 )
 
-echo [2/4] Build frontend + Electron...
-call "%NPM%" run build
+echo [2/4] Building...
+call npm run build
 if %errorlevel% neq 0 (
-    echo ERROR: build failed!
+    echo ERROR: Build failed!
     pause
     exit /b 1
 )
 
-echo [3/4] Package Windows installer (NSIS, 3-5 min)...
-echo Using China mirror for faster electron download...
+echo [3/4] Packaging (this may take 3-5 min)...
 set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
-call "%NPM%" run dist
+:: Fix ERR_REQUIRE_ESM for @noble/hashes in electron-builder 26 (Node.js 22 needs =true syntax)
+call node --experimental-require-module=true node_modules\electron-builder\out\cli\cli.js --win
 if %errorlevel% neq 0 (
-    echo ERROR: packaging failed!
+    echo ERROR: Packaging failed!
     pause
     exit /b 1
 )
 
 echo.
-echo === Package Success ===
+echo === Done! ===
 dir release\*.exe 2>nul
+if %errorlevel% neq 0 (
+    echo No .exe found in release\ folder.
+)
 pause

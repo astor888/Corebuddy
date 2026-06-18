@@ -13,6 +13,7 @@ export default defineConfig({
         vite: {
           build: {
             outDir: 'dist-electron',
+            minify: false,
             rollupOptions: {
               output: {
                 format: 'cjs',
@@ -32,6 +33,7 @@ export default defineConfig({
         vite: {
           build: {
             outDir: 'dist-electron',
+            minify: false,
             rollupOptions: {
               output: {
                 format: 'cjs',
@@ -43,6 +45,9 @@ export default defineConfig({
     ]),
     renderer(),
   ],
+  build: {
+    minify: false,
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

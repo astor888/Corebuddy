@@ -81,8 +81,9 @@ function loadFromDirectory(dir: string) {
         loadSkillMd(fullPath)
       }
     }
-  } catch (e: any) {
-    console.error('Plugin load error:', e.message)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error('Plugin load error:', msg)
   }
 }
 
@@ -110,8 +111,9 @@ function loadJsPlugin(filePath: string) {
 
     registerTool(fullTool)
     console.log(`Plugin loaded: ${fullTool.name} from ${path.basename(filePath)}`)
-  } catch (e: any) {
-    console.error(`Failed to load plugin ${filePath}:`, e.message)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error(`Failed to load plugin ${filePath}:`, msg)
   }
 }
 
@@ -122,8 +124,9 @@ function loadSkillMd(filePath: string) {
 
     loadedSkills.push(skill)
     console.log(`Skill loaded: ${skill.name} from ${path.basename(filePath)}`)
-  } catch (e: any) {
-    console.error(`Failed to load SKILL.md ${filePath}:`, e.message)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error(`Failed to load SKILL.md ${filePath}:`, msg)
   }
 }
 

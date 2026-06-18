@@ -5,10 +5,12 @@ import fs from 'fs'
 import { configGet, configSet, allConvs, saveConv, delConv } from './database'
 import { getContext } from './context'
 import { agentLoop } from './agent-loop'
-import { loadMemory, savePresetMemory } from './memory'
+import { loadMemory, savePresetMemory, distillDailyLogs } from './memory'
 import { loadAllPlugins, getLoadedSkills } from './plugins'
+import { getMarketplaceSkills, searchMarketplace, installSkill, uninstallSkill } from './skill-marketplace'
 import { connectAllMcpServers, getMcpServers, connectOneMcpServer, disconnectMcpServer, updateMcpServer, removeMcpServer, getAllServerStatus, getServerTools } from './mcp-client'
 import { startOAuthServer, startOAuthFlow, stopOAuthServer, getOAuthPort } from './oauth'
+import { getAllConnectors, getConnector, setConnectorStatus, getAllConnectorStatuses } from './connectors'
 
 let mcpConnected = false
 
@@ -33,8 +35,9 @@ function init() {
     fs.mkdirSync(path.join(d, 'context'), { recursive: true })
     if (!fs.existsSync(path.join(d, 'conversations.json'))) fs.writeFileSync(path.join(d, 'conversations.json'), '[]')
     // Config file handled by database.ts (minibuddy-config.json)
-  } catch (e: any) {
-    console.error('初始化数据目录失败:', e.message)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error('初始化数据目录失败:', msg)
   }
 }
 
@@ -53,12 +56,14 @@ const activeStreams = new Map<string, { abort: () => void }>()
 
 function broadcastToAll(channel: string, data?: any) {
   for (const win of BrowserWindow.getAllWindows()) {
-    try { win.webContents.send(channel, data) } catch {}
+    try { win.webContents.send(channel, data) } catch (err) {
+      console.error(`[IPC] broadcastToAll(${channel}) 失败:`, err)
+    }
   }
 }
 
 // Chat — uses Agent Loop
-ipcMain.handle('chat:sendMessage', async (_e, text: string, modelId: string, convId: string, permLevel?: number, persona?: string, scenePrompt?: string, userName?: string) => {
+ipcMain.handle('chat:sendMessage', async (_e, text: string, modelId: string, convId: string, permLevel?: number, persona?: string, scenePrompt?: string, userName?: string, executionMode?: string, attachments?: Array<{type: string; name: string; data?: string; path?: string; size?: number}>) => {
   if (!mainWindow) return
   const apiKey = configGet('apiKey')
   const modelsCfg = loadModelsConfig()
@@ -83,12 +88,14 @@ ipcMain.handle('chat:sendMessage', async (_e, text: string, modelId: string, con
       apiKey: effectiveApiKey,
       model: resolvedModelId,
       persona: (persona as any) || 'office',
+      executionMode: (executionMode as any) || 'craft',
       permLevel: permLevel || 3,
       permissionMode: 'default',
       thinkingEffort: 'medium',
       scenePrompt: scenePrompt || undefined,
       userName: userName || undefined,
       apiUrl,
+      attachments: attachments || undefined,
       onRequestPermission: async (toolName, toolDesc) => {
         if (!mainWindow || mainWindow.isDestroyed()) return false
         const result = await dialog.showMessageBox(mainWindow, {
@@ -113,8 +120,13 @@ ipcMain.handle('chat:sendMessage', async (_e, text: string, modelId: string, con
       conv.updatedAt = new Date().toISOString()
       saveConv(conv)
     }
-  } catch (e: any) {
-    broadcastToAll('chat:streamError', { message: `内部错误: ${e?.message || e}` })
+    return { success: true }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? (e?.message || String(e)) : String(e)
+    const stack = e instanceof Error ? (e?.stack?.split('\n').slice(0, 3).join('\n') || '') : ''
+    console.error('[MAIN] Agent loop crash:', msg, '\n' + stack)
+    broadcastToAll('chat:streamError', { message: `内部错误: ${msg}\n\n📍 ${stack}` })
+    return { success: false, error: msg }
   } finally {
     activeStreams.delete(convId)
     broadcastToAll('conv:status', { convId, loading: false })
@@ -164,8 +176,9 @@ ipcMain.handle('chat:feedback', async (_e, convId: string, msgId: string, type: 
       }
     }
     return { success: true }
-  } catch (e: any) {
-    return { success: false, error: e.message }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { success: false, error: msg }
   }
 })
 
@@ -249,6 +262,80 @@ ipcMain.handle('mcp:remove', (_e, name: string) => {
 ipcMain.handle('mcp:status', () => getAllServerStatus())
 ipcMain.handle('mcp:tools', (_e, name: string) => getServerTools(name))
 
+// ── Connector Management ──
+ipcMain.handle('connectors:list', () => {
+  return getAllConnectors()
+})
+
+ipcMain.handle('connectors:status', () => {
+  return getAllConnectorStatuses()
+})
+
+ipcMain.handle('connectors:connect', async (_e, id: string, config: Record<string, string>) => {
+  const connector = getConnector(id)
+  if (!connector) return { success: false, error: `连接器 "${id}" 不存在` }
+
+  setConnectorStatus(id, 'connecting')
+
+  try {
+    if (connector.mcpCommand) {
+      // Has an MCP server — delegate to MCP infrastructure
+      const env: Record<string, string> = {}
+      for (const field of connector.configSchema) {
+        const val = config[field.key]
+        if (val) {
+          // Map schema key to env variable name (uppercase connector ID + key)
+          const envKey = `${id.replace(/-/g, '_').toUpperCase()}_${field.key.toUpperCase()}`
+          env[envKey] = val
+        }
+      }
+
+      const result = await connectOneMcpServer(id, {
+        command: connector.mcpCommand,
+        args: connector.mcpArgs || [],
+        env: Object.keys(env).length ? env : undefined,
+        enabled: true,
+      })
+
+      if (result && result.includes('error')) {
+        setConnectorStatus(id, 'disconnected')
+        return { success: false, error: result }
+      }
+    } else {
+      // Manual connector — simulate connection delay
+      await new Promise(r => setTimeout(r, 800))
+    }
+
+    // Save config (only for MCP connectors)
+    if (connector.mcpCommand) {
+      updateMcpServer(id, { command: connector.mcpCommand, args: connector.mcpArgs || [], env: { ...config }, enabled: true })
+    }
+
+    setConnectorStatus(id, 'connected')
+    return { success: true }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? (e?.message || '连接失败') : '连接失败'
+    setConnectorStatus(id, 'disconnected')
+    return { success: false, error: msg }
+  }
+})
+
+ipcMain.handle('connectors:disconnect', async (_e, id: string) => {
+  const connector = getConnector(id)
+  if (!connector) return false
+
+  try {
+    if (connector.mcpCommand) {
+      disconnectMcpServer(id)
+    }
+    setConnectorStatus(id, 'disconnected')
+    return true
+  } catch {
+    setConnectorStatus(id, 'disconnected')
+    return true
+  }
+})
+
 // ── Model config ──
 const MODELS_PATH = () => path.join(app.getPath('userData'), 'corebuddy-data', 'models.json')
 
@@ -307,8 +394,9 @@ ipcMain.handle('mcp:export', async () => {
   try {
     fs.copyFileSync(cfgPath, result.filePath)
     return { success: true, path: result.filePath }
-  } catch (e: any) {
-    return { success: false, error: e.message }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { success: false, error: msg }
   }
 })
 ipcMain.handle('mcp:import', async () => {
@@ -325,8 +413,9 @@ ipcMain.handle('mcp:import', async () => {
     const results = await connectAllMcpServers()
     mcpConnected = true
     return { success: true, results }
-  } catch (e: any) {
-    return { success: false, error: e.message }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { success: false, error: msg }
   }
 })
 
@@ -335,8 +424,9 @@ ipcMain.handle('oauth:start', async (_e, serviceName: string, config: any) => {
   try {
     const result = await startOAuthFlow(serviceName, config)
     return { success: true, ...result }
-  } catch (e: any) {
-    return { success: false, error: e.message }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { success: false, error: msg }
   }
 })
 ipcMain.handle('oauth:port', () => getOAuthPort())
@@ -353,6 +443,23 @@ ipcMain.handle('skills:list', () => {
   return skills.map(s => ({ name: s.name, description: s.description, type: s.type, triggers: s.triggers }))
 })
 
+// Marketplace
+ipcMain.handle('skills:marketplace', () => {
+  return getMarketplaceSkills()
+})
+
+ipcMain.handle('skills:search', (_e, query: string) => {
+  return searchMarketplace(query)
+})
+
+ipcMain.handle('skills:install', async (_e, id: string) => {
+  return installSkill(id)
+})
+
+ipcMain.handle('skills:uninstall', async (_e, id: string) => {
+  return uninstallSkill(id)
+})
+
 // Open external URL
 ipcMain.handle('openExternal', async (_e, url: string) => {
   await shell.openExternal(url)
@@ -365,8 +472,9 @@ ipcMain.handle('file:open', async (_e, filePath: string) => {
     if (!fs.existsSync(filePath)) return { success: false, error: `文件不存在: ${filePath}` }
     await shell.openPath(filePath)
     return { success: true }
-  } catch (e: any) {
-    return { success: false, error: e.message }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { success: false, error: msg }
   }
 })
 
@@ -374,8 +482,9 @@ ipcMain.handle('file:showInFolder', async (_e, filePath: string) => {
   try {
     shell.showItemInFolder(filePath)
     return { success: true }
-  } catch (e: any) {
-    return { success: false, error: e.message }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { success: false, error: msg }
   }
 })
 
@@ -391,8 +500,9 @@ ipcMain.handle('file:read', async (_e, filePath: string) => {
     }
     const content = fs.readFileSync(filePath, 'utf-8').slice(0, 100000)
     return { success: true, content, size: stat.size, ext }
-  } catch (e: any) {
-    return { success: false, error: e.message }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { success: false, error: msg }
   }
 })
 
@@ -417,8 +527,9 @@ ipcMain.handle('file:listOutputs', async () => {
       .sort((a, b) => b.time.localeCompare(a.time))
       .slice(0, 50)
     return { success: true, files, dir: outputsDir }
-  } catch (e: any) {
-    return { success: false, error: e.message, files: [] }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { success: false, error: msg, files: [] }
   }
 })
 
@@ -436,8 +547,24 @@ ipcMain.handle('file:getInfo', async (_e, filePath: string) => {
       ext: path.extname(filePath).toLowerCase(),
       isDir: stat.isDirectory(),
     }
-  } catch (e: any) {
-    return { success: false, error: e.message }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { success: false, error: msg }
+  }
+})
+
+// Save temp file for pasted/dropped attachments
+ipcMain.handle('file:saveTemp', async (_e, data: string, fileName: string) => {
+  try {
+    const tmpDir = path.join(app.getPath('userData'), 'corebuddy-data', 'temp-uploads')
+    fs.mkdirSync(tmpDir, { recursive: true })
+    const buffer = Buffer.from(data, 'base64')
+    const filePath = path.join(tmpDir, fileName)
+    fs.writeFileSync(filePath, buffer)
+    return { success: true, path: filePath, size: buffer.length }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { success: false, error: msg }
   }
 })
 
@@ -446,6 +573,8 @@ app.whenReady().then(async () => {
   createWindow()
   init()
   loadAllPlugins()
+  // Memory maintenance: distill old logs on start
+  try { distillDailyLogs() } catch {}
   // Connect MCP servers (non-blocking)
   connectAllMcpServers().then(results => {
     mcpConnected = true

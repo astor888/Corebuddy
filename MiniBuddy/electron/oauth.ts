@@ -62,8 +62,8 @@ export function startOAuthServer(): Promise<number> {
       resolve(OAUTH_PORT)
     })
 
-    server.on('error', (e: any) => {
-      if (e.code === 'EADDRINUSE') {
+    server.on('error', (e: unknown) => {
+      if ((e as any).code === 'EADDRINUSE') {
         console.error(`Port ${OAUTH_PORT} in use — trying to recover, closing existing server`)
         try { server?.close() } catch {}
         // Retry once
@@ -146,7 +146,7 @@ export async function startOAuthFlow(
           redirectUri
         )
         originalResolve(tokenResult)
-      } catch (e: any) {
+      } catch (e: unknown) {
         reject(e)
       }
     }

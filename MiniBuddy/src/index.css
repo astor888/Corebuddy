@@ -44,3 +44,37 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #C9CDD4;
 }
+
+/* WorkBuddy-style collapsible thinking block */
+details.thinking-block {
+  margin: 8px 0;
+  border: 1px solid #E5E6EB;
+  border-radius: 8px;
+  background: #F7F8FA;
+  overflow: hidden;
+}
+details.thinking-block[open] {
+  border-color: #D3D1C7;
+  background: #FAFAFA;
+}
+summary.thinking-summary {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #86909C;
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+  font-weight: 500;
+}
+summary.thinking-summary:hover {
+  color: #4E5969;
+  background: #F1EFE8;
+}
+details.thinking-block > p,
+details.thinking-block > ol,
+details.thinking-block > ul {
+  padding: 0 12px 8px;
+  margin: 0;
+  font-size: 12px;
+  color: #86909C;
+}

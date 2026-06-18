@@ -13,14 +13,40 @@ export interface Message {
 }
 
 export type PermissionLevel = 'default' | 'full'
-export type ChatMode = 'chat' | 'craft' | 'plan'
-export type PersonaMode = 'office' | 'creative'
+export type ChatMode = 'craft' | 'plan' | 'ask'
+export type PersonaMode = 'office' | 'creative' | 'code'
 
 export interface SkillInfo {
   name: string
   description: string
   type: 'skill' | 'tool'
   triggers?: string[]
+}
+
+export interface MarketplaceSkill {
+  id: string
+  name: string
+  description: string
+  category: '开发' | '办公' | '设计' | '数据分析' | '系统工具'
+  author: string
+  version: string
+  installed: boolean
+  skillMd: string
+  jsCode?: string
+  triggers?: string[]
+}
+
+export interface ConnectorConfig {
+  id: string
+  name: string
+  description: string
+  category: '开发' | '办公协作' | '数据查询' | '云服务' | '法律' | '沟通' | '邮箱' | '项目管理' | '设计创意'
+  icon: string
+  configSchema: Array<{ key: string; label: string; placeholder: string; type?: string }>
+  status: 'disconnected' | 'connecting' | 'connected' | 'error'
+  mcpCommand?: string
+  mcpArgs?: string[]
+  helpUrl?: string
 }
 
 export interface ArtifactInfo {
@@ -56,7 +82,7 @@ export interface ElectronAPI {
     onStatusChange: (callback: (data: { convId: string; loading: boolean }) => void) => () => void
   }
   chat: {
-    sendMessage: (text: string, modelId: string, convId: string, permLevel?: number, persona?: string, scenePrompt?: string, userName?: string) => Promise<void>
+    sendMessage: (text: string, modelId: string, convId: string, permLevel?: number, persona?: string, scenePrompt?: string, userName?: string, executionMode?: string, attachments?: Array<{type: string; name: string; data?: string; path?: string; size?: number}>) => Promise<void>
     abort: (convId: string) => Promise<boolean>
     feedback: (convId: string, msgId: string, type: 'like' | 'dislike', content: string) => Promise<{ success: boolean; error?: string }>
     onStreamChunk: (callback: (chunk: string) => void) => () => void
@@ -66,6 +92,7 @@ export interface ElectronAPI {
     onToolStart: (callback: (data: { count: number; names: string[] }) => void) => () => void
     onToolProgress: (callback: (data: { completed: number; total: number }) => void) => () => void
     onToolAction: (callback: (data: { action: string; completed: number; total: number }) => void) => () => void
+    onCompacting: (callback: (data: { active: boolean; convId?: string }) => void) => () => void
   }
   progress: {
     get: () => Promise<{
@@ -100,11 +127,22 @@ export interface ElectronAPI {
   }
   skills: {
     list: () => Promise<SkillInfo[]>
+    marketplace: () => Promise<MarketplaceSkill[]>
+    search: (query: string) => Promise<MarketplaceSkill[]>
+    install: (id: string) => Promise<{ success: boolean; error?: string; path?: string }>
+    uninstall: (id: string) => Promise<boolean>
+  }
+  connectors: {
+    list: () => Promise<ConnectorConfig[]>
+    connect: (id: string, config: Record<string, string>) => Promise<{ success: boolean; error?: string }>
+    disconnect: (id: string) => Promise<boolean>
+    status: () => Promise<Record<string, string>>
   }
   oauth: {
     start: (service: string, config: any) => Promise<{ success: boolean; accessToken?: string; error?: string }>
   }
   file: {
+    saveTemp: (data: string, fileName: string) => Promise<{ success: boolean; path?: string; size?: number; error?: string }>
     open: (filePath: string) => Promise<{ success: boolean; error?: string }>
     showInFolder: (filePath: string) => Promise<{ success: boolean; error?: string }>
     read: (filePath: string) => Promise<{ success: boolean; content?: string; size?: number; ext?: string; error?: string }>

@@ -1,6 +1,6 @@
 {
   "name": "corebuddy",
-  "version": "1.4.1",
+  "version": "1.9.6",
   "description": "Your private AI secretary. Runs locally, data never leaves your machine.",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -46,6 +46,7 @@
   "dependencies": {
     "docx": "^8.5.0",
     "highlight.js": "^11.11.1",
+    "jszip": "^3.10.1",
     "mermaid": "^11.15.0",
     "pdf-parse": "^2.4.5",
     "pptxgenjs": "^3.12.0",
