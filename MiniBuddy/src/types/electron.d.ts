@@ -93,6 +93,9 @@ export interface ElectronAPI {
     onToolProgress: (callback: (data: { completed: number; total: number }) => void) => () => void
     onToolAction: (callback: (data: { action: string; completed: number; total: number }) => void) => () => void
     onCompacting: (callback: (data: { active: boolean; convId?: string }) => void) => () => void
+    onPipelineStart: (callback: (data: { pipelineId: string; pipelineName: string; stages: Array<{id: string; name: string; description: string; agentRole: string; status: string}>; totalStages: number; convId?: string }) => void) => () => void
+    onPipelineStageUpdate: (callback: (data: { pipelineId: string; stageId: string; status: string; stageName: string; agentRole: string; stageIndex: number; totalStages: number; error?: string; convId?: string }) => void) => () => void
+    onPipelineComplete: (callback: (data: { pipelineId: string; status: string; totalStages: number; duration: number; error?: string; convId?: string }) => void) => () => void
   }
   progress: {
     get: () => Promise<{

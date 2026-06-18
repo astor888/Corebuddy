@@ -7,6 +7,7 @@ import { getContext } from './context'
 import { agentLoop } from './agent-loop'
 import { loadMemory, savePresetMemory, distillDailyLogs } from './memory'
 import { loadAllPlugins, getLoadedSkills } from './plugins'
+import { initPipelineRegistry } from './pipeline-registry'
 import { getMarketplaceSkills, searchMarketplace, installSkill, uninstallSkill } from './skill-marketplace'
 import { connectAllMcpServers, getMcpServers, connectOneMcpServer, disconnectMcpServer, updateMcpServer, removeMcpServer, getAllServerStatus, getServerTools } from './mcp-client'
 import { startOAuthServer, startOAuthFlow, stopOAuthServer, getOAuthPort } from './oauth'
@@ -573,6 +574,7 @@ app.whenReady().then(async () => {
   createWindow()
   init()
   loadAllPlugins()
+  initPipelineRegistry()
   // Memory maintenance: distill old logs on start
   try { distillDailyLogs() } catch {}
   // Connect MCP servers (non-blocking)

@@ -4,10 +4,11 @@
 // 支持顺序/并行/条件跳转，ReviewAgent 做质量门禁
 // ═══════════════════════════════════════════════════════════════════════
 
-import { getTool } from './tool-registry'
+import { getTool, getAllTools } from './tool-registry'
 import type { SubAgentConfig } from './sub-agent'
 import { spawnSubAgent } from './sub-agent'
 import { getActiveSkillsPromptForAgent } from './plugins'
+import { getAllPipelines, getAllRoles } from './pipeline-registry'
 
 // ── 核心类型定义 ──
 
@@ -419,13 +420,16 @@ const BUILTIN_PIPELINES: PipelineDefinition[] = [
 
 /**
  * 根据用户输入匹配最合适的 Pipeline
- * 返回匹配到的第一个 pipeline，按 triggerPatterns 权重排序
+ * 先查用户自定义的 Pipeline（优先级高），再查内置的
  */
 export function matchPipeline(userInput: string): PipelineDefinition | null {
   const input = userInput.toLowerCase()
 
+  // 合并所有 pipeline：用户自定义 + 内置
+  const allPipelines = [...getAllPipelines(), ...BUILTIN_PIPELINES]
+
   // 按触发词数量排序（更精准的匹配优先）
-  const scored = BUILTIN_PIPELINES.map(p => {
+  const scored = allPipelines.map(p => {
     const matchCount = p.triggerPatterns.filter(t => input.includes(t.toLowerCase())).length
     return { pipeline: p, score: matchCount }
   })
@@ -513,6 +517,20 @@ export async function runPipeline(
 
   notify('chat:streamChunk', `\n\n> 🔄 **启动 ${pipelineDef.name} Pipeline** — 共 ${pipelineDef.stages.length} 个阶段\n\n`)
 
+  // 发送 Pipeline 启动事件（前端进度展示用）
+  notify('chat:pipelineStart', {
+    pipelineId: pipelineDef.id,
+    pipelineName: pipelineDef.name,
+    stages: pipelineDef.stages.map(s => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      agentRole: s.agentRole,
+      status: 'pending',
+    })),
+    totalStages: pipelineDef.stages.length,
+  })
+
   run.status = 'running'
   config.onPipelineComplete = config.onPipelineComplete || (() => {})
   config.onPipelineError = config.onPipelineError || (() => {})
@@ -583,6 +601,14 @@ export async function runPipeline(
     run.completedAt = Date.now()
     notify('chat:streamChunk', `\n\n> ✅ **${pipelineDef.name} Pipeline 完成！** 耗时 ${Math.round((Date.now() - run.startedAt) / 1000)}s\n\n`)
 
+    // 发送 Pipeline 完成事件（前端进度展示关闭用）
+    notify('chat:pipelineComplete', {
+      pipelineId: pipelineDef.id,
+      status: 'completed',
+      totalStages: pipelineDef.stages.length,
+      duration: Date.now() - run.startedAt,
+    })
+
     // 拼接最终输出
     const finalOutput = buildFinalOutput(run, pipelineDef)
     run.context['_finalOutput'] = finalOutput
@@ -593,6 +619,15 @@ export async function runPipeline(
     run.status = 'failed'
     run.error = err.message || String(err)
     notify('chat:streamChunk', `\n\n> ❌ **Pipeline 执行失败**: ${run.error}\n\n`)
+
+    // 发送 Pipeline 失败事件
+    notify('chat:pipelineComplete', {
+      pipelineId: pipelineDef.id,
+      status: 'failed',
+      error: run.error,
+      totalStages: pipelineDef.stages.length,
+      duration: Date.now() - run.startedAt,
+    })
     config.onPipelineError!(run.error)
     return run
   }
@@ -614,6 +649,17 @@ async function executeStage(
   config.onStageStart?.(stage.id, stage.name)
 
   notify('chat:streamChunk', `\n> 📋 **${stage.name}** — ${stage.description}\n\n`)
+
+  // 发送 stage 进度事件
+  notify('chat:pipelineStageUpdate', {
+    pipelineId: run.pipelineId,
+    stageId: stage.id,
+    status: 'running',
+    stageName: stage.name,
+    agentRole: stage.agentRole,
+    stageIndex: stageIndexInPipeline(run.pipelineId, stage.id),
+    totalStages: totalStagesInPipeline(run.pipelineId),
+  })
 
   // 查找这个 stage 对应的 agent role
   const role = [...BUILTIN_ROLES, ...(pipelineDefRoles(run.pipelineId))].find(r => r.name === stage.agentRole)
@@ -645,11 +691,34 @@ async function executeStage(
     config.onStageComplete?.(stage.id, stage.name, result)
 
     notify('chat:streamChunk', `> ✅ **${stage.name} 完成**\n\`\`\`\n${result.slice(0, 500)}${result.length > 500 ? '\n...（已截断）' : ''}\n\`\`\`\n\n`)
+
+    // 发送 stage 完成事件
+    notify('chat:pipelineStageUpdate', {
+      pipelineId: run.pipelineId,
+      stageId: stage.id,
+      status: 'completed',
+      stageName: stage.name,
+      agentRole: stage.agentRole,
+      stageIndex: stageIndexInPipeline(run.pipelineId, stage.id),
+      totalStages: totalStagesInPipeline(run.pipelineId),
+    })
   } catch (err: any) {
     state.status = 'failed'
     state.error = err.message || String(err)
     config.onStageError?.(stage.id, stage.name, state.error)
     notify('chat:streamChunk', `> ❌ **${stage.name} 失败**: ${state.error}\n\n`)
+
+    // 发送 stage 失败事件
+    notify('chat:pipelineStageUpdate', {
+      pipelineId: run.pipelineId,
+      stageId: stage.id,
+      status: 'failed',
+      error: state.error,
+      stageName: stage.name,
+      agentRole: stage.agentRole,
+      stageIndex: stageIndexInPipeline(run.pipelineId, stage.id),
+      totalStages: totalStagesInPipeline(run.pipelineId),
+    })
 
     // Review 门禁 — 如果失败且设置了重试
     if (stage.reviewRequired) {
@@ -665,6 +734,25 @@ async function executeStage(
       }
     }
   }
+}
+
+/**
+ * 获取指定 stage 在 pipeline 中的索引
+ */
+function stageIndexInPipeline(pipelineId: string, stageId: string): number {
+  const allPipelines = [...getAllPipelines(), ...BUILTIN_PIPELINES]
+  const def = allPipelines.find(p => p.id === pipelineId)
+  if (!def) return 0
+  return def.stages.findIndex(s => s.id === stageId)
+}
+
+/**
+ * 获取 pipeline 的总 stage 数
+ */
+function totalStagesInPipeline(pipelineId: string): number {
+  const allPipelines = [...getAllPipelines(), ...BUILTIN_PIPELINES]
+  const def = allPipelines.find(p => p.id === pipelineId)
+  return def?.stages.length || 0
 }
 
 /**
@@ -695,11 +783,18 @@ function buildStageTask(stage: StageDefinition, run: PipelineRun, userInput: str
 
 /**
  * 获取 AgentRole 对应的可用工具
+ * - 如果 role 未指定工具（空列表），返回全部注册工具
+ * - 如果指定了工具，只返回匹配的工具
  */
 function getToolsForRole(role?: AgentRole): SubAgentConfig['tools'] {
+  // 没指定 role 或 tools 为空 → 全部工具可用
   if (!role || role.tools.length === 0) {
-    // 全部工具可用
-    return []
+    return getAllTools().map(t => ({
+      name: t.name,
+      description: t.description,
+      permission: t.permission,
+      execute: (params: any) => t.execute(params),
+    }))
   }
 
   return role.tools
@@ -714,9 +809,14 @@ function getToolsForRole(role?: AgentRole): SubAgentConfig['tools'] {
 }
 
 /**
- * 根据 pipelineId 查找 pipeline 定义中的 roles（用于模板替换）
+ * 根据 pipelineId 查找 pipeline 定义中的 roles
+ * 先查用户自定义，再查内置
  */
 function pipelineDefRoles(pipelineId: string): AgentRole[] {
+  const userPipelines = getAllPipelines()
+  const userDef = userPipelines.find(p => p.id === pipelineId)
+  if (userDef) return userDef.roles
+
   const def = BUILTIN_PIPELINES.find(p => p.id === pipelineId)
   return def?.roles || []
 }

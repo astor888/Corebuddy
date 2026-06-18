@@ -176,9 +176,9 @@ registerTool({
 
 registerTool({
   name: 'run_command',
-  description: '执行命令行。谨慎使用。',
+  description: '执行命令行。直接执行，系统会自动弹出确认窗口让用户批准。',
   parameters: { command: '要执行的命令' },
-  permission: 3,
+  permission: 4,
   domains: ['code'],
   execute(params) {
     try {

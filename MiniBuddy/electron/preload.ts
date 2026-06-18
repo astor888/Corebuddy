@@ -78,6 +78,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('chat:compacting', h)
       return () => ipcRenderer.removeListener('chat:compacting', h)
     },
+    onPipelineStart: (cb: (data: { pipelineId: string; pipelineName: string; stages: Array<{id: string; name: string; description: string; agentRole: string; status: string}>; totalStages: number; convId?: string }) => void) => {
+      const h = (_: any, d: any) => cb(d)
+      ipcRenderer.on('chat:pipelineStart', h)
+      return () => ipcRenderer.removeListener('chat:pipelineStart', h)
+    },
+    onPipelineStageUpdate: (cb: (data: { pipelineId: string; stageId: string; status: string; stageName: string; agentRole: string; stageIndex: number; totalStages: number; error?: string; convId?: string }) => void) => {
+      const h = (_: any, d: any) => cb(d)
+      ipcRenderer.on('chat:pipelineStageUpdate', h)
+      return () => ipcRenderer.removeListener('chat:pipelineStageUpdate', h)
+    },
+    onPipelineComplete: (cb: (data: { pipelineId: string; status: string; totalStages: number; duration: number; error?: string; convId?: string }) => void) => {
+      const h = (_: any, d: any) => cb(d)
+      ipcRenderer.on('chat:pipelineComplete', h)
+      return () => ipcRenderer.removeListener('chat:pipelineComplete', h)
+    },
   },
   progress: {
     get: () => ipcRenderer.invoke('progress:get'),

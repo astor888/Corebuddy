@@ -17,7 +17,8 @@ import { ExpertsView } from './components/ExpertsView'
 import { AutomationsView } from './components/AutomationsView'
 import { MoreView } from './components/MoreView'
 import { SettingsModal } from './components/SettingsModal'
-import { MemoryModal } from './components/MemoryModal'
+import { PipelineProgress } from './components/PipelineProgress'
+import type { PipelineProgressState } from './components/PipelineProgress'
 
 // ====== Types & Interfaces ======
 
@@ -46,6 +47,7 @@ interface AppState {
   artifacts: ArtifactInfo[]
   toolStatus: { active: boolean; names: string[]; completed: number; total: number; action: string }
   toolSteps: ToolStep[]
+  pipelineStatus: PipelineProgressState
   creditUsed: number
   activeScene: string | null
   attachments: Array<{ name: string; path: string; type: string; size: number }>
@@ -127,7 +129,8 @@ export function App() {
     showOnboarding: false, onboardingStep: 0,
     artifacts: [],
     toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' },
-    toolSteps: [], creditUsed: 0,
+    toolSteps: [],
+    pipelineStatus: { active: false, pipelineName: '', stages: [], totalStages: 0 }, creditUsed: 0,
     attachments: [],
     pendingTasks: [],
     autoConfig: { defaultModel: 'deepseek-v4-pro', imageModel: 'deepseek-v4-flash' },
@@ -348,11 +351,26 @@ export function App() {
     }) }))
     // Artifact created
     cc.push(api()!.chat.onArtifact(artifact => { if ((artifact as any).convId === activeIdRef.current) setS(prev => ({ ...prev, artifacts: [...prev.artifacts, artifact] })) }))
+    // Pipeline start
+    cc.push(api()!.chat.onPipelineStart?.(data => { if ((data as any).convId === activeIdRef.current) {
+      const stages = (data.stages || []).map((s: any) => ({ id: s.id, name: s.name, description: s.description, agentRole: s.agentRole, status: 'pending' as const }))
+      u({ pipelineStatus: { active: true, pipelineName: data.pipelineName, stages, totalStages: data.totalStages } })
+    }}))
+    // Pipeline stage update
+    cc.push(api()!.chat.onPipelineStageUpdate?.(data => { if ((data as any).convId === activeIdRef.current) setS(prev => {
+      const stages = prev.pipelineStatus.stages.map(s => s.id === data.stageId ? { ...s, status: data.status as any, error: data.error || undefined } : s)
+      return { ...prev, pipelineStatus: { ...prev.pipelineStatus, stages } }
+    }) }))
+    // Pipeline complete
+    cc.push(api()!.chat.onPipelineComplete?.(data => { if ((data as any).convId === activeIdRef.current) {
+      // 延迟清除，让用户看到完整状态
+      setTimeout(() => u({ pipelineStatus: { active: false, pipelineName: '', stages: [], totalStages: 0 } }), 2000)
+    }}))
     // Stream done
     cc.push(api()!.chat.onStreamDone((data?: StreamDoneData) => {
       sendingRef.current = false
       if ((data as any)?.convId === activeIdRef.current) {
-        u({ loading: false, toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' }, toolSteps: [], creditUsed: 0 })
+        u({ loading: false, toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' }, toolSteps: [], pipelineStatus: { active: false, pipelineName: '', stages: [], totalStages: 0 }, creditUsed: 0 })
         if (data && data.artifactCount > 0) {
           u({ rightTab: 'artifacts', showRight: true })
         }
@@ -368,7 +386,7 @@ export function App() {
         const msg = typeof err === 'string' ? err : ((err as any).message || (err as any).error || (err as any).value || JSON.stringify(err))
         streamRef.current += `\n\n错误：${msg}`
         setS(prev => { const m = [...prev.msgs]; if (m.length) m[m.length - 1] = { ...m[m.length - 1], content: streamRef.current }; return { ...prev, msgs: m } })
-        u({ loading: false, toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' }, toolSteps: [], creditUsed: 0 })
+        u({ loading: false, toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' }, toolSteps: [], pipelineStatus: { active: false, pipelineName: '', stages: [], totalStages: 0 }, creditUsed: 0 })
       }
       cc.forEach(f => f())
       // Auto-execute next task in queue
@@ -464,7 +482,7 @@ export function App() {
 
   // Detect permission level based on task content
   function detectPermission(text: string): PermissionLevel {
-    const writeKeywords = ['写入', '创建', '生成', '写', '修改', '新建', '删除', '保存', '导出', '编译', '运行', '执行', '打包', '部署', 'install', 'write', 'create', 'delete', 'build', 'compile', 'run', 'exec', 'deploy', 'save']
+    const writeKeywords = ['写入', '创建', '生成', '写', '修改', '新建', '删除', '保存', '导出', '编译', '运行', '执行', '打包', '部署', '安装', '装个', 'install', 'write', 'create', 'delete', 'build', 'compile', 'run', 'exec', 'deploy', 'save', 'setup']
     const lower = text.toLowerCase()
     for (const kw of writeKeywords) {
       if (lower.includes(kw.toLowerCase())) return 'full'
@@ -1114,6 +1132,10 @@ export function App() {
                               </div>
                               <span className="font-medium">思考中</span>
                             </div>
+                            {/* Pipeline progress — multi-agent orchestration */}
+                            {s.pipelineStatus.active && s.pipelineStatus.stages.length > 0 && (
+                              <PipelineProgress state={s.pipelineStatus} />
+                            )}
                             {/* Tool execution progress — WorkBuddy style steps */}
                             {s.toolStatus.active && s.toolSteps.length > 0 && (
                               <div className="ml-1 space-y-1.5">
