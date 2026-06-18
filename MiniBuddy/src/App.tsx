@@ -907,11 +907,17 @@ export function App() {
                       // Collect tool results for this message
                       const tools: Array<{ name: string; content: string }> = []
                       let ti = gi + 1
+                      let toolIdx = 0
                       while (ti < s.msgs.length && s.msgs[ti].role === 'tool') {
                         const tc = s.msgs[ti].content
-                        const nm = tc.match(/Tool "(\w+)" result/)
-                        tools.push({ name: nm ? nm[1] : 'tool', content: tc.replace(/^Tool "\w+" result:\s*/m, '').trim().slice(0, 1000) })
+                        const name = toolBlocks[toolIdx]?.name || (() => {
+                          // Fallback: try regex matching for error messages
+                          const nm = tc.match(/工具\s+(\S+)\s+执行失败/)
+                          return nm ? nm[1] : 'tool'
+                        })()
+                        tools.push({ name, content: tc.trim().slice(0, 1000) })
                         ti++
+                        toolIdx++
                       }
 
                       assistantMsgs.push({ msg: cm, toolBlocks, thinkingText, answerText, tools })
