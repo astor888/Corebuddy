@@ -144,6 +144,18 @@ export function App() {
   const skillsRef = useRef<HTMLDivElement>(null)
   const [modelOpen, setModelOpen] = useState(false)
   const modelDropdownRef = useRef<HTMLDivElement>(null)
+
+  // ============== Data ==============
+  const [allModels, setAllModels] = useState<Array<{ id: string; name: string; apiUrl: string; apiKey?: string }>>([])
+  const [defaultModel, setDefaultModel] = useState('deepseek-v4-pro')
+
+  useEffect(() => {
+    const a = api()
+    if (a?.models) a.models.list().then(cfg => {
+      if (cfg?.models) { setAllModels(cfg.models); setDefaultModel(cfg.defaultModel || cfg.models[0]?.id || '') }
+    }).catch(() => {})
+  }, [])
+
   const selectedModelName = s.modelId === 'auto' ? 'Auto' : (allModels.find(m => m.id === s.modelId)?.name || s.modelId)
 
   // Close model dropdown on outside click
@@ -443,17 +455,6 @@ export function App() {
       setTimeout(() => { send(undefined, taskText, taskAttachments) }, 50)
     }
   }
-
-  // ============== Data ==============
-  const [allModels, setAllModels] = useState<Array<{ id: string; name: string; apiUrl: string; apiKey?: string }>>([])
-  const [defaultModel, setDefaultModel] = useState('deepseek-v4-pro')
-
-  useEffect(() => {
-    const a = api()
-    if (a?.models) a.models.list().then(cfg => {
-      if (cfg?.models) { setAllModels(cfg.models); setDefaultModel(cfg.defaultModel || cfg.models[0]?.id || '') }
-    }).catch(() => {})
-  }, [])
   const perms: Array<{ v: PermissionLevel; l: string; d: string }> = [
     { v: 'default', l: '默认权限', d: '允许文件读写、文档生成、记忆管理' },
     { v: 'full', l: '完全访问', d: '包含系统命令执行、无限制访问' },
