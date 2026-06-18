@@ -116,7 +116,14 @@ function ensureDirectories(): void {
   }
 }
 
+let loadingErrors: string[] = []
+
+export function getLoadingErrors(): string[] {
+  return loadingErrors
+}
+
 function loadUserPipelines(): void {
+  loadingErrors = []
   try {
     const files = fs.readdirSync(PIPELINES_DIR)
     for (const file of files) {
@@ -127,17 +134,23 @@ function loadUserPipelines(): void {
         const parsed = JSON.parse(content) as PipelineDefinition
         // 基本校验
         if (!parsed.id || !parsed.name || !Array.isArray(parsed.stages)) {
-          console.error(`Pipeline ${file}: 缺少必要字段 (id/name/stages)`)
+          const msg = `Pipeline ${file}: 缺少必要字段 (id/name/stages)`
+          console.error(msg)
+          loadingErrors.push(msg)
           continue
         }
         userPipelines.push(parsed)
         console.log(`User pipeline loaded: ${parsed.name} (${parsed.id})`)
       } catch (e: unknown) {
-        console.error(`Failed to load pipeline ${file}:`, e instanceof Error ? e.message : String(e))
+        const msg = `Failed to load pipeline ${file}: ${e instanceof Error ? e.message : String(e)}`
+        console.error(msg)
+        loadingErrors.push(msg)
       }
     }
   } catch (e: unknown) {
-    console.error('Failed to scan pipelines dir:', e instanceof Error ? e.message : String(e))
+    const msg = `Failed to scan pipelines dir: ${e instanceof Error ? e.message : String(e)}`
+    console.error(msg)
+    loadingErrors.push(msg)
   }
 }
 

@@ -117,8 +117,11 @@ export async function agentLoop(
         },
       })
 
-      // 如果 Pipeline 成功完成，记录完成状态
+      // 如果 Pipeline 成功完成，带简要总结
       if (pipelineResult.status === 'completed') {
+        const completedStages = Array.from(pipelineResult.stages.values()).filter(s => s.status === 'completed').length
+        const totalStages = pipelineResult.stages.size
+        send('chat:streamChunk', `\n\n> ✅ **${pipelineDef.name} 完成** — ${completedStages}/${totalStages} 个阶段全部执行完毕`)
         send('chat:streamDone', { toolCount: pipelineResult.stages.size, artifactCount: 0, pipeline: true })
         runStopHooks(convId)
         return

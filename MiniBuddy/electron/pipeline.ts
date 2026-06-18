@@ -436,6 +436,11 @@ export function matchPipeline(userInput: string): PipelineDefinition | null {
     .filter(s => s.score > 0)
     .sort((a, b) => b.score - a.score)
 
+  // 如果前两名分数接近（差距 ≤1），日志记录以供调试
+  if (scored.length >= 2 && scored[0].score - scored[1].score <= 1) {
+    console.log(`[Pipeline] 多个 Pipeline 匹配接近: #1 "${scored[0].pipeline.name}"(${scored[0].score}) vs #2 "${scored[1].pipeline.name}"(${scored[1].score})`)
+  }
+
   return scored.length > 0 ? scored[0].pipeline : null
 }
 
@@ -449,9 +454,6 @@ export function shouldUsePipeline(userInput: string, executionMode: string): boo
 
   const pipeline = matchPipeline(userInput)
   if (!pipeline) return false
-
-  // 简单任务（少于 15 字）不启动 Pipeline，直接单 Agent 处理
-  if (userInput.length < 15) return false
 
   return true
 }
@@ -798,7 +800,11 @@ function getToolsForRole(role?: AgentRole): SubAgentConfig['tools'] {
   }
 
   return role.tools
-    .map(name => getTool(name))
+    .map(name => {
+      const tool = getTool(name)
+      if (!tool) console.warn(`[Pipeline] 角色 "${role.name}" 引用了不存在的工具 "${name}"`)
+      return tool
+    })
     .filter((t): t is NonNullable<typeof t> => t !== null)
     .map(t => ({
       name: t.name,
