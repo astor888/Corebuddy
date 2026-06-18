@@ -583,6 +583,11 @@ async function callLLM(
     }> = new Map()
 
     while (true) {
+      // Check abort during streaming
+      if (cfg.isAborted?.()) {
+        reader.cancel()
+        return { content, toolCalls: [] }
+      }
       const { done, value } = await reader.read()
       if (done) break
       buffer += decoder.decode(value, { stream: true })
