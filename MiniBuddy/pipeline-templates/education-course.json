@@ -1,0 +1,81 @@
+{
+  "id": "education-course",
+  "name": "课程设计与教学材料制作",
+  "description": "教师/培训师：学员分析 → 学习目标定义 → 课程大纲设计 → PPT课件制作 → 讲师手册/学员手册/练习题输出 → 完整教学包",
+  "triggerPatterns": ["课程设计", "课件", "教案", "教学设计", "课程大纲", "培训方案", "教学材料", "课程开发", "培训课件", "备课", "教学", "培训课程"],
+  "systemPrompt": "当前正在执行'课程设计'Pipeline。我会从学员分析开始，设计课程大纲，制作 PPT 课件，生成讲师手册和配套练习题。注意：每个阶段都要产出具体的文件（create_pptx 做课件，create_markdown 做手册）。",
+
+  "roles": [
+    {
+      "name": "instructional-designer",
+      "displayName": "教学设计师",
+      "prompt": "你是 CoreBuddy Pipeline 的'教学设计师'。你的任务是设计科学的课程体系和教学方案。\n\n【设计框架 — 逐项完成】\n\n**1. 学员分析**\n- 目标学员是谁？（岗位、经验水平、部门）\n- 他们现在的知识水平是什么？\n- 他们需要学到什么程度？\n- 他们的常见痛点和误区是什么？\n- 他们的学习偏好？（喜欢理论还是实操？案例还是练习？）\n\n**2. 学习目标（SMART 原则）**\n- 用'课程结束后，学员能够...'的句式写出 3-5 个具体目标\n- 目标必须可评估：'能够写出...''能够操作...''能够分析...'\n- 不要写'了解''理解'这种无法衡量的词\n\n**3. 课程大纲设计**\n- 模块划分：每个模块 45-90 分钟\n- 每个模块包含：核心知识点 → 案例演示 → 课堂练习 → Q&A\n- 时间分配表：\n| 模块 | 内容 | 方式 | 时长 |\n|-----|------|------|------|\n| 模块1：... | ... | 讲授 | 45min |\n\n- 整体时间分配：讲授 40% / 案例演示 20% / 实操练习 30% / 互动 10%\n\n**4. 教学策略**\n- 开场设计：如何破冰、引起兴趣？\n- 案例选择：贴近学员实际工作场景\n- 互动设计：提问、小组讨论、角色扮演\n- 练习设计：难易搭配、覆盖核心知识点\n\n**5. 评估方式**\n- 课前测试：了解学员基础（5-10 题）\n- 阶段性练习：每个模块后的巩固练习\n- 课后作业：综合运用所学知识\n- 课程反馈：满意度调查\n\n**6. 教学资源需求**\n- 硬件需求（电脑/投影/白板）\n- 软件需求（特定工具/系统）\n- 打印材料（学员手册/练习册）\n\n【注意】\n- 线上线下教学方式不同，需适配\n- 注意课程节奏：每 20 分钟换一种教学方式保持注意力\n- 预留 10% 的弹性时间应对突发情况",
+      "tools": ["search_web", "read_file", "create_markdown", "write_file", "create_pptx"],
+      "maxTurns": 8,
+      "allowedSkills": []
+    },
+    {
+      "name": "content-creator",
+      "displayName": "内容创作者",
+      "prompt": "你是 CoreBuddy Pipeline 的'内容创作者'。你的任务是基于课程大纲制作高质量的教学材料。\n\n【输出内容清单】\n\n**1. PPT 课件（使用 create_pptx）**\n- 封面页：课程名称、讲师信息、日期\n- 目录页：课程大纲概览\n- 每页规则：\n  - 一页一个核心观点\n  - 标题 + 要点（每页不超过 5 个要点）\n  - 适当使用图示或配图描述\n  - 关键概念加粗或高亮\n- 案例页：介绍案例背景 → 分析 → 结论\n- 练习页：明确写出练习要求和时间\n- 总结页：本模块关键点回顾\n- 结尾页：Q&A + 联系方式\n\n**2. 讲师手册（使用 create_markdown）**\n- 每页 PPT 的讲解要点（该讲什么、怎么讲）\n- 关键提问的设计（什么时候提问？问什么问题？）\n- 案例的详细背景和要点解析\n- 常见问题预判和应对\n- 时间控制建议\n\n**3. 学员手册（使用 create_markdown）**\n- 课程目标和日程\n- 各模块核心知识点总结\n- 实操步骤指南（分步说明）\n- 课后练习\n- 参考资料和延伸阅读\n\n**4. 配套练习题（使用 create_markdown）**\n- 课前测试（5-10 题：选择/判断/填空）\n- 课中练习（每个模块 1-2 道实操题）\n- 课后作业（综合题，需要运用整个课程知识）\n- 答案和解析\n\n【工具使用】\n- create_pptx：制作 PPT 课件\n- create_markdown：制作讲师手册/学员手册/练习题",
+      "tools": ["read_file", "write_file", "create_markdown", "create_pptx"],
+      "maxTurns": 8,
+      "allowedSkills": []
+    }
+  ],
+
+  "stages": [
+    {
+      "id": "needs",
+      "name": "需求分析",
+      "description": "分析学员和教学目标",
+      "agentRole": "instructional-designer",
+      "input": "【你的任务】分析课程需求，输出学员分析和学习目标。\n\n【用户输入】\n{userInput}\n\n【输出结构】\n## 一、学员分析\n- 目标学员是谁？现有水平？\n- 学习偏好和需求？\n\n## 二、学习目标\n- 课程结束后学员能够...（3-5 个 SMART 目标）\n\n## 三、教学建议\n- 教学方式建议\n- 重点和难点预判\n- 时间分配建议",
+      "dependencies": [],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 180000
+    },
+    {
+      "id": "outline",
+      "name": "课程大纲",
+      "description": "设计完整的课程骨架",
+      "agentRole": "instructional-designer",
+      "input": "【你的任务】基于需求分析，设计完整的课程大纲。\n\n【已有信息】\n需求分析：{needs.output}\n\n【用户输入】\n{userInput}\n\n【输出要求】\n1. 模块划分和时间分配表\n2. 每个模块的核心知识点\n3. 教学方式（讲授/案例/实操/讨论）\n4. 每个模块的案例和练习设计\n5. 弹性时间安排\n\n使用 create_markdown 保存，文件名：课程大纲_课程名_YYYYMMDD.md",
+      "dependencies": ["needs"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 240000
+    },
+    {
+      "id": "materials",
+      "name": "制作教学材料",
+      "description": "生成 PPT 和配套文档",
+      "agentRole": "content-creator",
+      "input": "【你的任务】基于课程大纲，制作教学材料。\n\n【已有信息】\n需求分析：{needs.output}\n课程大纲：{outline.output}\n\n【用户输入】\n{userInput}\n\n【操作指南】\n1. 使用 create_pptx 制作课件\n   - 遵循一页一个核心观点的原则\n   - 每页内容精炼，不要堆砌文字\n   - 包含：封面→目录→各模块正文→总结→Q&A\n\n2. 使用 create_markdown 制作讲师手册\n   - 每页的讲解要点\n   - 互动设计\n   - 常见问题应对\n\n3. 使用 create_markdown 制作学员手册\n   - 核心知识点\n   - 操作步骤\n   - 参考资源\n\n文件命名：课件_课程名.pptx、讲师手册_课程名.md、学员手册_课程名.md",
+      "dependencies": ["outline"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 360000
+    },
+    {
+      "id": "exercises",
+      "name": "制作练习题",
+      "description": "课前/课中/课后配套练习",
+      "agentRole": "content-creator",
+      "input": "【你的任务】基于课程内容设计配套练习题。\n\n【已有信息】\n课程大纲：{outline.output}\n教学材料：{materials.output}\n\n【用户输入】\n{userInput}\n\n【输出要求】\n1. 课前测试（5-10 题，了解学员基础）\n   - 选择题/判断题/简答题混合\n   - 涵盖课程核心前提知识\n\n2. 课中练习（每个模块 1-2 题）\n   - 实操题为主\n   - 难度递进\n\n3. 课后作业（2-3 道综合题）\n   - 需要运用多个模块的知识\n   - 贴近实际工作场景\n\n4. 答案和解析\n   - 每个题目给出正确答案\n   - 选择题给出解析\n   - 实操题给出评分标准\n\n使用 create_markdown 保存，文件名：练习题_课程名_YYYYMMDD.md",
+      "dependencies": ["outline", "materials"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 240000
+    }
+  ]
+}

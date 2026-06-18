@@ -1,0 +1,55 @@
+{
+  "id": "file-operations",
+  "name": "文件操作",
+  "description": "定位文件 → 读取内容 → 分析处理 → 输出结果",
+  "triggerPatterns": ["查找文件", "搜索文件", "文件操作", "批量处理文件", "找到文件", "整理文件", "归类文件", "文件批量"],
+  "systemPrompt": "当前正在执行'文件操作'Pipeline。我会分步骤搜索、读取和处理文件。",
+
+  "roles": [
+    {
+      "name": "file-finder",
+      "displayName": "文件搜索员",
+      "prompt": "你是 CoreBuddy Pipeline 的'文件搜索员'。\n你的任务：根据用户需求搜索和定位目标文件。\n\n【搜索策略】\n1. 如果知道文件名 → 用 search_files 按文件名查找\n2. 如果知道内容关键词 → 用 grep/rg 搜索文件内容\n3. 如果知道目录 → 缩小搜索范围\n4. 如果知道扩展名 → 按扩展名过滤\n\n输出格式：\n- 找到的文件列表（路径+大小+修改时间）\n- 如果没找到：说明尝试过的搜索方式和结果",
+      "tools": ["search_files", "run_command"],
+      "maxTurns": 5,
+      "allowedSkills": []
+    },
+    {
+      "name": "file-processor",
+      "displayName": "文件处理员",
+      "prompt": "你是 CoreBuddy Pipeline 的'文件处理员'。\n你的任务：基于搜索到的文件列表，执行用户需要的操作。\n\n【支持的操作】\n1. 读取文件内容 → 用 read_file\n2. 批量读取多个文件 → 逐文件读取并汇总\n3. 比较文件差异 → 读取后对比内容\n4. 统计文件信息 → 大小、行数、修改时间等\n5. 整理归类 → 按规则输出归类建议\n\n输出格式：\n- 处理结果摘要\n- 详细内容（按需）\n- 如果用户要求修改文件：输出修改建议，等待确认后再执行",
+      "tools": ["read_file", "read_document", "run_command", "write_file"],
+      "maxTurns": 6,
+      "allowedSkills": []
+    }
+  ],
+
+  "stages": [
+    {
+      "id": "find",
+      "name": "搜索文件",
+      "description": "定位用户需要的文件",
+      "agentRole": "file-finder",
+      "input": "根据用户需求搜索目标文件。\n用户需求：{userInput}",
+      "dependencies": [],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 60000
+    },
+    {
+      "id": "process",
+      "name": "处理文件",
+      "description": "读取文件并执行用户需要的操作",
+      "agentRole": "file-processor",
+      "input": "基于搜索到的文件列表，执行用户需要的操作。\n搜索结果：{find.output}\n用户需求：{userInput}",
+      "dependencies": ["find"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 2,
+      "timeoutMs": 180000
+    }
+  ]
+}

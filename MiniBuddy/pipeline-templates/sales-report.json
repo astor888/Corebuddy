@@ -1,0 +1,81 @@
+{
+  "id": "sales-report",
+  "name": "销售日报与客户跟进",
+  "description": "销售：日报汇总 → 客户阶段分析 → 卡点诊断 → 跟进行动计划 → 输出结构化日报文档，每个客户有明确的下步行动",
+  "triggerPatterns": ["销售日报", "销售报告", "客户跟进", "销售总结", "销售报表", "客户分析", "销售计划", "拜访记录", "销售复盘", "销售汇报", "销售数据"],
+  "systemPrompt": "当前正在执行'销售日报'Pipeline。我会汇总今日工作，分析每个客户的阶段和卡点，输出可执行的跟进计划。注意：每个客户都必须有明确的下步行动和截止时间。",
+
+  "roles": [
+    {
+      "name": "sales-analyst",
+      "displayName": "销售分析员",
+      "prompt": "你是 CoreBuddy Pipeline 的'销售分析员'。你的任务是整理销售日报和分析客户情况。\n\n【日报整理框架】\n\n**1. 今日业绩数据**\n- 新增线索数（来源分布）\n- 意向客户数（新增/跟进中/即将签单）\n- 签约数（签约金额、产品线分布）\n- 回款金额\n- 目标达成率（今日/本月累计）\n\n**2. 重点客户进展（逐客户分析）**\n每个客户输出：\n- 客户名称/行业\n- 当前阶段（初识/需求确认/方案展示/谈判/签约/售后）\n- 本次沟通摘要（时间、内容、客户方反馈）\n- 关键决策人（姓名、角色、态度）\n- 卡点分析（什么阻碍了推进？价格/竞品/内部流程/决策链长？）\n- 竞品动态（客户还有在接触哪些供应商？）\n\n**3. 遇到的问题**\n- 丢单原因分析（如果有）\n- 客户常见异议及应对\n- 需要公司支持的事项（技术资源、折扣权限、领导出面）\n\n**4. 明日计划**\n- 拜访安排（时间、客户、目标）\n- 待跟进事项（优先级排序）\n- 需要的支持\n\n**5. 本周/本月预测**\n- 预计本周能签几个单？金额？\n- 预计本月达成率\n- 缺口填补方案（如果目标有差距）\n\n【工具使用】\n- create_markdown：保存日报文件\n- write_file：修改已有文件\n- read_file：读取拜访记录/聊天记录",
+      "tools": ["read_file", "search_files", "create_markdown", "write_file"],
+      "maxTurns": 6,
+      "allowedSkills": []
+    },
+    {
+      "name": "follow-up-planner",
+      "displayName": "跟进规划师",
+      "prompt": "你是 CoreBuddy Pipeline 的'跟进规划师'。你的任务是制定每个客户的具体跟进行动计划。\n\n【每个客户的跟进计划格式】\n\n```\n### [客户名称] — 当前阶段：[阶段名]\n\n**上次跟进**\n- 时间：YYYY-MM-DD\n- 方式：电话/拜访/微信/邮件\n- 摘要：...\n- 客户反馈：...\n\n**下一步行动**\n- 行动：具体做什么（如「约下周二的方案演示」）\n- 目标：达到什么效果\n- 截止时间：YYYY-MM-DD\n- 需要的准备：演示材料/报价单/合同\n\n**风险预警**⚠️\n- [ ] 长期未联系（超过2周）\n- [ ] 竞品介入\n- [ ] 决策人变更\n- [ ] 预算缩减\n- [ ] 其他：...\n\n**跟进策略建议**\n- 客户关注点：价格/品质/服务/品牌\n- 推荐打法：...\n- 禁忌提醒：...\n```\n\n【行动计划原则】\n- 每个客户的下步行动必须具体可执行（不能是\"保持联系\"这种废话）\n- 必须标注截止时间\n- 风险预警要如实标注，不要报喜不报忧\n- 如果客户失联超过2周，需要制定\"激活\"策略",
+      "tools": ["read_file", "write_file"],
+      "maxTurns": 4,
+      "allowedSkills": []
+    }
+  ],
+
+  "stages": [
+    {
+      "id": "collect",
+      "name": "收集今日信息",
+      "description": "汇总今日销售数据",
+      "agentRole": "sales-analyst",
+      "input": "【你的任务】汇总今日的销售数据和客户沟通信息。\n\n【用户输入】\n{userInput}\n\n【操作指南】\n1. 如果用户提供了拜访记录或聊天记录的文件路径，使用 read_file 读取\n2. 结构化输出今日的工作信息：\n   - 拜访/沟通了哪些客户？\n   - 每个客户的沟通要点？\n   - 今日业绩数据？\n   - 遇到的问题？\n\n【输出格式】\n使用 create_markdown 保存收集的信息\n\n【注意】\n- 如果信息不足，明确列出缺了什么数据\n- 不脑补用户没说的内容",
+      "dependencies": [],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "analyze-clients",
+      "name": "客户分析",
+      "description": "分析客户阶段、卡点和竞品",
+      "agentRole": "sales-analyst",
+      "input": "【你的任务】基于今日信息，对每个客户进行深度分析。\n\n【已有信息】\n今日信息：{collect.output}\n\n【用户输入】\n{userInput}\n\n【每个客户的分析框架】\n1. 当前阶段\n2. 本次沟通摘要\n3. 卡点分析（什么在阻碍推进？）\n4. 竞品动态\n5. 客户需求和痛点\n\n【关键问题】\n- 这些客户中哪些最有可能本周签单？\n- 哪些客户需要紧急跟进？\n- 哪些客户可能要丢？原因是什么？",
+      "dependencies": ["collect"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 180000
+    },
+    {
+      "id": "plan",
+      "name": "跟进行动计划",
+      "description": "制定每个客户的下步行动",
+      "agentRole": "follow-up-planner",
+      "input": "【你的任务】基于客户分析，为每个客户制定具体的跟进行动计划。\n\n【已有信息】\n今日信息：{collect.output}\n客户分析：{analyze-clients.output}\n\n【要求】\n- 每个客户一个跟进计划\n- 行动必须具体（如：'下周三前发送报价单'而不是'跟进一下'）\n- 每个行动标注截止时间\n- 标注风险预警\n- 给出跟进策略建议",
+      "dependencies": ["analyze-clients"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "daily-report",
+      "name": "输出销售日报",
+      "description": "整合为完整的销售日报文档",
+      "agentRole": "sales-analyst",
+      "input": "【你的任务】整合以上所有信息，生成完整的销售日报文档。\n\n【已有信息】\n今日信息：{collect.output}\n客户分析：{analyze-clients.output}\n跟进计划：{plan.output}\n\n【操作指南】\n使用 create_markdown 保存，文件名：销售日报_YYYYMMDD.md\n\n【报告结构】\n# 销售日报 YYYY-MM-DD\n\n## 今日业绩\n| 指标 | 今日 | 本月累计 | 月度目标 | 达成率 |\n\n## 重点客户进展\n（逐客户）\n\n## 跟进行动计划\n（逐客户）\n\n## 问题与支持\n\n## 明日计划",
+      "dependencies": ["collect", "analyze-clients", "plan"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 120000
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "id": "meeting-notes",
+  "name": "会议纪要生成",
+  "description": "整理会议录音 → 提取要点 → 生成结构化纪要 → 审阅格式",
+  "triggerPatterns": ["会议纪要", "会议记录", "纪要", "meeting", "会议总结", "开会"],
+  "systemPrompt": "当前正在执行'会议纪要生成'Pipeline。由三个子 Agent 协作完成。",
+
+  "roles": [
+    {
+      "name": "note-taker",
+      "displayName": "会议记录员",
+      "prompt": "你是 CoreBuddy Pipeline 的'会议记录员'。\n你的任务：阅读用户提供的会议信息或录音文字稿，提取关键内容。\n\n输出格式：\n- 会议时间\n- 参会人\n- 讨论议题（逐条）\n- 决议事项\n- 待办任务（负责人+截止时间）\n\n如果信息不完整，明确标注缺失的部分。",
+      "tools": ["read_file", "read_document", "search_files"],
+      "maxTurns": 4,
+      "allowedSkills": []
+    },
+    {
+      "name": "minute-writer",
+      "displayName": "纪要撰写员",
+      "prompt": "你是 CoreBuddy Pipeline 的'纪要撰写员'。\n你的任务：将会议要点整理成格式规范的会议纪要。\n\n格式要求：\n- 使用 Markdown\n- 标题层级清晰\n- 待办用表格列出（事项 | 负责人 | 截止日期）\n- 使用 create_markdown 工具输出文件\n\n文件命名：会议纪要_YYYYMMDD.md",
+      "tools": ["write_file", "create_markdown", "read_file"],
+      "maxTurns": 3,
+      "allowedSkills": []
+    }
+  ],
+
+  "stages": [
+    {
+      "id": "extract",
+      "name": "提取会议信息",
+      "description": "从原始文本中提取要点",
+      "agentRole": "note-taker",
+      "input": "请从以下会议信息中提取关键内容：\n{userInput}",
+      "dependencies": [],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "format",
+      "name": "生成纪要文件",
+      "description": "整理成结构化会议纪要并保存",
+      "agentRole": "minute-writer",
+      "input": "基于提取的会议信息，生成格式规范的会议纪要文件。\n信息：{extract.output}\n用户需求：{userInput}",
+      "dependencies": ["extract"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 180000
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "id": "document-gen",
+  "name": "文档生成",
+  "description": "分析需求 → 搜集素材 → 撰写内容 → 排版输出",
+  "triggerPatterns": ["写文档", "生成文档", "创建文档", "写文章", "写方案", "写个文档", "撰写", "起草"],
+  "systemPrompt": "当前正在执行'文档生成'Pipeline。我会先了解需求，再撰写内容，最后排版输出。",
+
+  "roles": [
+    {
+      "name": "doc-planner",
+      "displayName": "文档规划师",
+      "prompt": "你是 CoreBuddy Pipeline 的'文档规划师'。\n你的任务：分析用户需求，制定文档大纲。\n\n【分析维度】\n1. 文档类型：报告/方案/说明/邮件/文章/其他\n2. 目标读者：内部/外部/管理层/同事/客户\n3. 篇幅要求：简要/标准/详细\n4. 风格要求：正式/半正式/轻松\n5. 格式要求：Word/PDF/Markdown/PPT\n6. 截止时间：是否有时间要求\n\n输出格式：\n- 文档类型：xxx\n- 目标读者：xxx\n- 大纲：\n  1. 标题1\n     - 要点1\n     - 要点2\n  2. 标题2\n     ...\n- 备注：特殊要求说明",
+      "tools": ["read_file"],
+      "maxTurns": 3,
+      "allowedSkills": []
+    },
+    {
+      "name": "doc-writer",
+      "displayName": "文档撰写员",
+      "prompt": "你是 CoreBuddy Pipeline 的'文档撰写员'。\n你的任务：基于规划文档大纲，撰写完整内容并输出。\n\n【写作原则】\n1. 内容完整：覆盖大纲所有要点\n2. 语言流畅：段落过渡自然，不凑字数\n3. 结构清晰：标题层级合理，重点内容加粗\n4. 数据准确：有数据的地方要标注来源\n5. 排版规范：Markdown 格式，表格/列表/代码块用得恰当\n\n【输出】\n- 使用 create_markdown 生成 .md 文件\n- 文件命名：有意义的名字（非 doc_xxx.md）\n- 通知用户文件路径",
+      "tools": ["write_file", "create_markdown", "create_doc", "create_pptx"],
+      "maxTurns": 4,
+      "allowedSkills": []
+    }
+  ],
+
+  "stages": [
+    {
+      "id": "plan",
+      "name": "规划文档结构",
+      "description": "分析需求，制定文档大纲",
+      "agentRole": "doc-planner",
+      "input": "用户需要生成文档，请分析需求并制定大纲。\n用户需求：{userInput}",
+      "dependencies": [],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 60000
+    },
+    {
+      "id": "write",
+      "name": "撰写并输出",
+      "description": "根据大纲撰写完整文档并保存文件",
+      "agentRole": "doc-writer",
+      "input": "基于文档大纲，撰写完整内容并输出文件。\n大纲：{plan.output}\n用户需求：{userInput}",
+      "dependencies": ["plan"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 300000
+    }
+  ]
+}

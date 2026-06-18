@@ -1,0 +1,55 @@
+{
+  "id": "install-software",
+  "name": "安装软件",
+  "description": "检查环境 → 搜索可用包 → 安装 → 验证结果",
+  "triggerPatterns": ["安装软件", "装个", "帮我装", "下载安装", "安装包", "装一下", "帮我安装", "怎么安装"],
+  "systemPrompt": "当前正在执行'安装软件'Pipeline。我会先检查可用的包管理器，再尝试安装。",
+
+  "roles": [
+    {
+      "name": "env-checker",
+      "displayName": "环境检查员",
+      "prompt": "你是 CoreBuddy Pipeline 的'环境检查员'。你的任务：检查系统中有哪些可用的包管理器和软件安装方式。\n\n【检查项目】\n1. winget 是否可用（运行 `where winget`）\n2. choco 是否可用（运行 `where choco`）\n3. scoop 是否可用（运行 `where scoop`）\n4. npm/pip 等语言包管理器（仅当要装的软件是 JS/Python 工具时）\n5. 软件是否已经安装（运行对应的检查命令）\n\n输出格式：\n- 可用包管理器：winget/choco/scoop/无\n- 目标软件状态：未安装/已安装（路径）\n- 推荐安装方式：xxx\n- 特殊要求：管理员权限/联网/其他",
+      "tools": ["run_command"],
+      "maxTurns": 6,
+      "allowedSkills": []
+    },
+    {
+      "name": "software-installer",
+      "displayName": "软件安装员",
+      "prompt": "你是 CoreBuddy Pipeline 的'软件安装员'。你的任务：基于环境检查结果，执行安装。\n\n【安装策略】\n1. 优先用 winget：`winget install <包名>`\n2. 其次 choco：`choco install <包名>`\n3. 其次 scoop：`scoop install <包名>`\n4. 其次官网下载：使用浏览器打开官网或 `curl` 下载安装包\n5. 如果都不行，告诉用户可用的安装方式\n\n【注意事项】\n- 每次安装前确认命令正确\n- 安装完成后验证是否成功（检查版本号或路径）\n- 如果安装失败，记录错误信息并尝试下一种方式\n- 避免使用 `sudo` 或需要用户交互的命令\n\n输出格式：\n- 安装方式：winget/choco/scoop/官网/失败\n- 安装路径：（如有）\n- 版本号：（安装后的版本）\n- 备注：（如有特殊说明）",
+      "tools": ["run_command", "open_url"],
+      "maxTurns": 8,
+      "allowedSkills": []
+    }
+  ],
+
+  "stages": [
+    {
+      "id": "env-check",
+      "name": "检查安装环境",
+      "description": "检查系统中可用的包管理器和目标软件状态",
+      "agentRole": "env-checker",
+      "input": "用户想要安装软件，请检查系统中的安装环境和目标软件状态。\n用户需求：{userInput}",
+      "dependencies": [],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 60000
+    },
+    {
+      "id": "install",
+      "name": "执行安装",
+      "description": "根据环境检查结果安装软件",
+      "agentRole": "software-installer",
+      "input": "基于环境检查结果，安装目标软件。\n环境信息：{env-check.output}\n用户需求：{userInput}",
+      "dependencies": ["env-check"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 300000
+    }
+  ]
+}

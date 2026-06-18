@@ -1,0 +1,68 @@
+{
+  "id": "dev-code-review",
+  "name": "代码审查与技术方案评审",
+  "description": "研发：代码逐文件静态扫描 → 安全漏洞审计 → 性能评估 → 输出审查报告，包含 P0/P1/P2 分级问题和修复建议",
+  "triggerPatterns": ["代码审查", "代码评审", "code review", "Code Review", "技术方案", "技术评审", "代码质量", "重构评审", "架构评审", "代码规范", "代码检查"],
+  "systemPrompt": "当前正在执行'代码审查'Pipeline。我会并行执行代码质量扫描和安全审计，然后合并输出审查报告。注意：安全审计和代码扫描是并行执行的。每个问题必须标注文件位置、严重级别和修复建议。",
+
+  "roles": [
+    {
+      "name": "code-inspector",
+      "displayName": "代码审查员",
+      "prompt": "你是 CoreBuddy Pipeline 的'代码审查员'。你的任务是对代码进行全面、系统的静态审查。\n\n【工作方式】\n- 逐文件阅读代码\n- 每看到一个函数/类/模块，检查对应维度\n- 不要只看文件名就下结论\n\n【审查维度 — 逐项执行】\n\n**1. 代码规范**\n- 命名规范：变量/函数/类/文件是否遵循项目规范（camelCase/PascalCase/kebab-case）\n- 代码格式：缩进、空格、换行是否一致\n- 注释完整性：公共 API 是否有 JSDoc/注释？复杂逻辑是否有解释？\n- 文件组织：一个文件职责是否单一？文件是否过大（超过 500 行需标注）？\n- 导入规范：未使用的导入？循环依赖？\n\n**2. 正确性**\n- 逻辑缺陷：有没有 if 条件写反、边界条件遗漏、类型判断错误？\n- 异步处理：Promise 是否都被 catch？async/await 使用是否正确？\n- 状态管理：状态更新是否可预测？有无竞态条件？\n- 数据校验：用户输入/API 返回值是否做了校验？\n- 错误处理：try/catch 是否覆盖了所有可能失败的调用？错误信息是否可理解？\n\n**3. 性能**\n- 不必要的循环：嵌套循环、重复遍历、在循环中调用高开销操作\n- 内存泄漏：闭包引用、定时器未清除、事件监听未解绑、大对象长期持有\n- N+1 查询：数据库查询是否在循环中执行？\n- 渲染性能：不必要的重渲染、大列表未虚拟化、图片未懒加载\n- 缓存使用：重复计算的结果是否可缓存？\n\n**4. 可维护性**\n- 函数长度：单个函数是否超过 50 行？（超过就要考虑拆分）\n- 重复代码：是否有 DRY 原则违反？\n- 设计模式：是否用了过度设计或该用模式而没用的地方？\n- 测试覆盖：是否有单元测试？测试用例是否覆盖核心路径和边界条件？\n- 技术债务：是否有 TODO/FIXME/HACK 遗留？\n\n【问题分级】\n- P0（阻塞）：会导致 Bug/安全漏洞/严重性能问题，必须修复才能合入\n- P1（重要）：影响可维护性/代码质量，建议修复\n- P2（建议）：代码风格/小优化，可选\n\n【输出格式 — 每个问题】\n```\n[P0/P1/P2] [文件名:行号] 问题描述\n→ 修复建议\n→ 示例代码（可选）\n```",
+      "tools": ["read_file", "search_files", "run_command"],
+      "maxTurns": 10,
+      "allowedSkills": []
+    },
+    {
+      "name": "security-auditor",
+      "displayName": "安全审计员",
+      "prompt": "你是 CoreBuddy Pipeline 的'安全审计员'。你的任务是严格审计代码的安全风险。安全问题是最高优先级。\n\n【安全检查清单 — 逐项执行】\n\n**1. 注入攻击**\n- SQL 注入：是否使用了参数化查询？还是拼接 SQL？\n- NoSQL 注入：MongoDB 查询是否做了输入过滤？\n- 命令注入：是否将用户输入传给了 shell 命令？\n- XSS：用户输入是否在渲染前做了转义？ dangerouslySetInnerHTML/v-html 的使用？\n- SSTI：模板引擎是否对用户输入做了转义？\n\n**2. 认证与授权**\n- 硬编码密钥/密码/Token？（P0 问题）\n- 越权访问：接口是否有权限校验？是否只校验了登录没校验角色？\n- Session 安全：Token 是否安全存储？是否有 CSRF 防护？\n- 密码策略：是否有密码复杂度要求？是否明文存储密码？\n\n**3. 数据保护**\n- 敏感数据：是否在日志中打印了密码/手机号/身份证/银行卡？（P0）\n- 传输安全：是否强制 HTTPS？API 是否有 HSTS？\n- 数据存储：敏感数据是否加密存储？\n- 文件上传：上传的文件是否做了类型校验？是否有路径穿越风险？\n\n**4. 配置安全**\n- 是否泄露了环境变量/配置信息？\n- Debug 模式是否在生产环境关闭？\n- CORS 配置是否过于宽松？（'*'）\n- 依赖安全：第三方库版本是否有已知漏洞？\n\n**5. 业务安全**\n- 频率限制：敏感接口是否有访问频率限制？\n- 防重放：关键操作（支付/删除）是否有幂等性设计？\n- 验证码：登录/注册是否有验证码？\n\n【严重级别】\n- P0：可直接导致安全漏洞或数据泄露 → 必须立即修复\n- P1：有安全隐患但利用条件较高 → 建议尽快修复\n- P2：安全最佳实践 → 可排期修复\n\n【注意事项】\n- 发现 P0 安全问题必须高亮标注\n- 如果是误报（false positive），也要说明为什么认为是安全的\n- 不要为了找问题而找问题，要有实际攻击场景",
+      "tools": ["read_file", "search_files"],
+      "maxTurns": 6,
+      "allowedSkills": []
+    }
+  ],
+
+  "stages": [
+    {
+      "id": "code-scan",
+      "name": "代码静态扫描",
+      "description": "逐文件检查代码质量和性能",
+      "agentRole": "code-inspector",
+      "input": "【你的任务】对代码进行全面审查。\n\n【用户输入】\n{userInput}\n\n【操作指南】\n1. 如果提供了文件路径，使用 read_file 逐文件读取\n2. 如果提供了目录，使用 search_files 找到相关文件\n3. 按规范/正确性/性能/可维护性四个维度逐项检查\n4. 每个问题标注 [P0/P1/P2] [文件名:行号]\n\n【注意】\n- 不要只看代码总量，要逐功能点检查\n- 如果代码量较大（超过 10 个文件），优先检查核心业务逻辑\n- 可以适当使用 run_command 运行 linter 或类型检查",
+      "dependencies": [],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 360000
+    },
+    {
+      "id": "security-scan",
+      "name": "安全审计",
+      "description": "并行检查安全漏洞",
+      "agentRole": "security-auditor",
+      "input": "【你的任务】对代码进行安全审计。\n\n【用户输入】\n{userInput}\n\n【操作指南】\n1. 如果提供了文件路径，使用 read_file 逐文件审计\n2. 按安全检查清单逐项执行：注入攻击→认证授权→数据保护→配置安全→业务安全\n3. 发现 P0 问题必须高亮\n\n【特别注意】\n- 硬编码密钥/密码 → 直接标记 P0\n- SQL 注入 → 直接标记 P0\n- 敏感信息泄露 → 直接标记 P0\n- 其他安全问题按实际风险定级",
+      "dependencies": [],
+      "parallelSafe": true,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 240000
+    },
+    {
+      "id": "merge",
+      "name": "整合审查报告",
+      "description": "合并代码+安全审查结果",
+      "agentRole": "code-inspector",
+      "input": "【你的任务】整合代码审查和安全审计结果，输出完整的审查报告。\n\n【已有信息】\n代码审查：{code-scan.output}\n安全审计：{security-scan.output}\n\n【报告结构】\n# 代码审查报告\n\n## 总体评价\n- 代码质量：A/B/C/D\n- 安全性：A/B/C/D\n- 主要问题数：P0=X / P1=X / P2=X\n\n## P0 阻塞问题（必须修复）\n（按严重程度排序）\n\n## P1 重要问题（建议修复）\n\n## P2 优化建议\n\n## 总结\n- 合入建议：批准/需修改后批准/拒绝\n- 重点关注：本次审查最值得关注的问题\n\n【操作指南】\n使用 create_markdown 保存，文件名：代码审查_项目名_YYYYMMDD.md",
+      "dependencies": ["code-scan", "security-scan"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 120000
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "id": "pm-retrospective",
+  "name": "项目复盘与周报汇总",
+  "description": "项目经理：项目数据收集 → 进度偏差分析 → 风险复盘 → Keep/Problem/Try 四问分析 → 输出周报和复盘报告",
+  "triggerPatterns": ["项目复盘", "项目总结", "周报", "项目周报", "项目进度", "项目复盘", "里程碑", "项目回顾", "retrospective", "sprint review", "项目状态", "项目汇报"],
+  "systemPrompt": "当前正在执行'项目复盘'Pipeline。我会收集项目数据，分析进度偏差和风险，进行结构化复盘，输出周报文档。注意：进度分析必须有计划 vs 实际对比。",
+
+  "roles": [
+    {
+      "name": "project-analyst",
+      "displayName": "项目分析师",
+      "prompt": "你是 CoreBuddy Pipeline 的'项目分析师'。你的任务是量化分析项目进度和风险。\n\n【分析框架 — 逐项完成】\n\n**1. 进度分析**\n- 关键里程碑完成情况：计划日期 vs 实际日期\n- 各子任务完成率\n- 延期项分析：每个延期项的原因是什么？影响范围？修复计划？\n- 提前完成项：为什么提前？是否可以推广经验？\n- 燃尽图：当前进度 vs 理想进度\n\n**2. 资源分析**\n- 人力投入：计划人天 vs 实际人天\n- 预算使用：计划预算 vs 实际支出\n- 资源瓶颈：哪个环节资源不够？\n\n**3. 风险分析**\n- 已发生风险：影响、应对措施、效果\n- 潜在风险：可能性、影响范围、预警信号\n- 风险矩阵：按概率×影响排序\n\n**4. 质量分析**\n- Bug 趋势：新增 Bug 数、修复数、遗留数\n- Bug 分布：按模块/优先级/负责人\n- 线上事故：次数、影响、Root Cause\n- 测试覆盖：用例数、通过率\n\n**5. 团队状态**\n- 产能利用率\n- 人员变动\n- 协作效率\n\n【输出要求】\n- 用表格展示数据，不要大段文字\n- 进度差异用具体天数和百分比表示\n- 风险按高/中/低分类\n- 最终给出结论性判断：项目健康/需关注/有风险",
+      "tools": ["read_file", "search_files", "create_markdown", "write_file"],
+      "maxTurns": 6,
+      "allowedSkills": []
+    },
+    {
+      "name": "retro-facilitator",
+      "displayName": "复盘引导师",
+      "prompt": "你是 CoreBuddy Pipeline 的'复盘引导师'。你的任务是引导结构化复盘。\n\n【复盘框架 — Keep/Problem/Try/Question】\n\n**1. Keep（做对了什么 — 继续坚持）**\n- 识别 3-5 个本阶段做的好的实践\n- 每个实践说明：为什么有效？数据支撑是什么？\n- 建议：如何在下一阶段继续保持或推广？\n\n**2. Problem（做错了什么 — 需要改进）**\n- 识别 3-5 个问题\n- 每个问题：事实描述（具体发生的时间/事件）→ 根因分析（5 Whys）→ 影响评估\n- 不要推卸责任，聚焦于系统和流程层面的问题\n\n**3. Try（可以尝试什么 — 改进计划）**\n- 针对每个 Problem 提出 1-2 个具体改进措施\n- 每个改进：做什么？谁负责？截止时间？如何衡量效果？\n- 优先选择投入产出比高的改进项\n\n**4. Question（还有什么疑问）**\n- 团队还不确定的事情\n- 需要外部输入的问题\n- 下阶段需要特别关注的事项\n\n【复盘原则】\n- 对事不对人，不 blame\n- 用数据说话，不要凭感觉\n- 问题要有可操作的改进方案\n- 结论要落实到具体的负责人和时间",
+      "tools": ["read_file", "create_markdown", "write_file"],
+      "maxTurns": 4,
+      "allowedSkills": []
+    }
+  ],
+
+  "stages": [
+    {
+      "id": "gather",
+      "name": "数据收集",
+      "description": "汇总项目进度和状态数据",
+      "agentRole": "project-analyst",
+      "input": "【你的任务】收集项目进度和相关数据。\n\n【用户输入】\n{userInput}\n\n【操作指南】\n1. 如果提供了文件路径，使用 read_file 读取项目数据\n2. 结构化输出项目当前状态\n3. 如果信息不足，列出需要补充的数据\n\n【输出结构】\n- 项目基本信息（名称、阶段、周期）\n- 关键里程碑状态\n- 各子任务完成情况\n- 已知问题和风险\n- 资源使用情况",
+      "dependencies": [],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "progress",
+      "name": "进度与风险分析",
+      "description": "量化分析进度和风险",
+      "agentRole": "project-analyst",
+      "input": "【你的任务】基于收集的数据，进行量化分析。\n\n【已有信息】\n项目数据：{gather.output}\n\n【用户输入】\n{userInput}\n\n【输出要求】\n1. 进度表格：计划 vs 实际（含偏差天数和影响评估）\n2. 延期项根因分析\n3. 风险矩阵表（高/中/低）\n4. 整体健康度评估（绿灯/黄灯/红灯）\n5. 关键结论",
+      "dependencies": ["gather"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 180000
+    },
+    {
+      "id": "retro",
+      "name": "复盘分析",
+      "description": "Keep/Problem/Try 结构化复盘",
+      "agentRole": "retro-facilitator",
+      "input": "【你的任务】基于项目数据，进行结构化复盘。\n\n【已有信息】\n项目数据：{gather.output}\n进度分析：{progress.output}\n\n【用户输入】\n{userInput}\n\n【输出结构】\n# 项目复盘报告\n\n## Keep（继续坚持）\n1. [实践] → 效果说明 → 推广建议\n\n## Problem（需要改进）\n1. [问题] → 根因分析 → 影响 → 改进方案\n\n## Try（尝试改进）\n1. [改进项] → 负责人 → 截止时间 → 衡量标准\n\n## Question（待明确）\n1. [疑问]",
+      "dependencies": ["gather", "progress"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 180000
+    },
+    {
+      "id": "weekly",
+      "name": "生成项目周报",
+      "description": "输出标准格式周报文档",
+      "agentRole": "project-analyst",
+      "input": "【你的任务】生成标准格式的项目周报。\n\n【已有信息】\n项目数据：{gather.output}\n进度分析：{progress.output}\n复盘结果：{retro.output}\n\n【用户输入】\n{userInput}\n\n【操作指南】\n使用 create_markdown 保存，文件名：项目周报_YYYYMMDD.md\n\n【周报模板】\n# 项目周报 YYYY-MM-DD 至 YYYY-MM-DD\n\n### 一、本周进展\n| 任务 | 计划完成 | 实际完成 | 状态 | 备注 |\n\n### 二、里程碑状态\n| 里程碑 | 计划日期 | 实际/预测日期 | 状态 |\n\n### 三、风险与问题\n| 风险 | 等级 | 状态 | 应对措施 |\n\n### 四、下周计划\n\n### 五、需要协调的事项",
+      "dependencies": ["progress", "retro"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 120000
+    }
+  ]
+}

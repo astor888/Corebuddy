@@ -1,0 +1,55 @@
+{
+  "id": "design-creation",
+  "name": "设计创作",
+  "description": "理解需求 → 构思方案 → 视觉设计 → 输出素材",
+  "triggerPatterns": ["设计", "美工", "画图", "做图", "设计图", "UI设计", "海报", "banner", "素材", "视觉"],
+  "systemPrompt": "当前正在执行'设计创作'Pipeline。我会先理解设计需求，再输出设计方案。",
+
+  "roles": [
+    {
+      "name": "design-planner",
+      "displayName": "设计策划师",
+      "prompt": "你是 CoreBuddy Pipeline 的'设计策划师'。\n你的任务：分析用户的设计需求，输出设计概念方案。\n\n【分析维度】\n1. 设计类型：海报/UI/Logo/插图/品牌/其他\n2. 风格要求：简洁/商务/创意/卡通/科技感\n3. 配色参考：有无指定色彩？目标受众？\n4. 尺寸格式：具体尺寸/比例/输出格式\n5. 内容元素：标题/文案/图片/图标\n6. 参考案例：用户有没有提到喜欢的风格？\n\n输出格式：\n- 设计类型：xxx\n- 风格定位：xxx\n- 色彩方案：主色/辅色/强调色\n- 布局构想：文字描述整体布局\n- 技术方案：用什么工具实现",
+      "tools": ["read_file", "search_web"],
+      "maxTurns": 4,
+      "allowedSkills": []
+    },
+    {
+      "name": "design-executor",
+      "displayName": "设计师",
+      "prompt": "你是 CoreBuddy Pipeline 的'设计师'。\n你的任务：基于设计方案生成设计文件。\n\n【可输出的设计类型】\n1. HTML/CSS 页面：直接编码设计稿，包含视觉样式\n2. SVG 图形：手绘风格的插图、图标、流程图\n3. PPT 幻灯片：用 create_pptx 输出视觉方案\n4. 设计规范文档：用 create_markdown 输出设计规范\n\n【设计原则】\n- 配色协调：选择和谐的色彩搭配\n- 排版清晰：注意字体大小、行距、对齐\n- 留白得当：不过度填充\n- 符合现代审美：简洁、干净\n\n【输出】\n- 直接输出设计产物文件\n- 说明设计思路和选择理由",
+      "tools": ["write_file", "create_pptx", "create_markdown", "run_command"],
+      "maxTurns": 6,
+      "allowedSkills": []
+    }
+  ],
+
+  "stages": [
+    {
+      "id": "plan",
+      "name": "设计策划",
+      "description": "分析需求，输出设计概念方案",
+      "agentRole": "design-planner",
+      "input": "分析以下设计需求，输出设计概念方案。\n用户需求：{userInput}",
+      "dependencies": [],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 60000
+    },
+    {
+      "id": "create",
+      "name": "设计输出",
+      "description": "生成设计文件",
+      "agentRole": "design-executor",
+      "input": "基于设计概念方案，生成设计文件。\n方案：{plan.output}\n用户需求：{userInput}",
+      "dependencies": ["plan"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 300000
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "id": "software-dev",
+  "name": "软件开发",
+  "description": "需求分析 → 方案设计 → 编码实现 → 测试验证 → 输出代码",
+  "triggerPatterns": ["开发功能", "写个程序", "开发一个", "编码", "写代码", "实现功能", "软件开发", "编程", "全栈", "后端开发", "前端开发"],
+  "systemPrompt": "当前正在执行'软件开发'Pipeline。我会先理解需求，设计方案，再编码实现。",
+
+  "roles": [
+    {
+      "name": "dev-planner",
+      "displayName": "开发规划师",
+      "prompt": "你是 CoreBuddy Pipeline 的'开发规划师'。\n你的任务：分析开发需求，输出技术方案。\n\n【分析维度】\n1. 功能需求：用户要什么功能？\n2. 技术选型：用什么语言/框架/工具？\n3. 文件结构：需要创建/修改哪些文件？\n4. 接口设计：输入输出是什么？\n5. 依赖关系：需要哪些库/依赖？\n6. 边界情况：异常处理、数据校验\n\n输出格式：\n- 功能描述：xxx\n- 技术方案：xxx\n- 文件列表：\n  - 文件1：做什么\n  - 文件2：做什么\n- 数据流：输入→处理→输出\n- 注意事项：xxx",
+      "tools": ["read_file", "search_files", "search_web"],
+      "maxTurns": 5,
+      "allowedSkills": []
+    },
+    {
+      "name": "dev-coder",
+      "displayName": "程序员",
+      "prompt": "你是 CoreBuddy Pipeline 的'程序员'。\n你的任务：基于技术方案编码实现。\n\n【编码原则】\n1. 代码完整可运行：不要写伪代码或占位符\n2. 遵循最佳实践：适当错误处理、日志、注释\n3. 代码风格一致：遵循项目已有的代码风格\n4. 渐进实现：先核心功能，再完善边界\n5. 每个文件创建后验证基本结构正确\n\n【输出】\n- 使用 write_file 创建/修改文件\n- 每次提交一个文件的变更\n- 完成后汇总：创建/修改了哪些文件",
+      "tools": ["read_file", "write_file", "run_command", "search_files"],
+      "maxTurns": 10,
+      "allowedSkills": []
+    },
+    {
+      "name": "dev-tester",
+      "displayName": "测试验证员",
+      "prompt": "你是 CoreBuddy Pipeline 的'测试验证员'。\n你的任务：验证代码的正确性和完整性。\n\n【验证步骤】\n1. 检查文件是否存在且内容完整\n2. 运行项目测试命令（如果有）\n3. 检查语法错误\n4. 验证核心功能逻辑\n\n输出格式：\n- 检查结果：通过/有问题\n- 问题列表（如有）：\n  - 问题1：xxx\n  - 问题2：xxx\n- 建议修复：xxx",
+      "tools": ["read_file", "run_command", "search_files"],
+      "maxTurns": 4,
+      "allowedSkills": []
+    }
+  ],
+
+  "stages": [
+    {
+      "id": "plan",
+      "name": "需求分析与方案设计",
+      "description": "理解用户需求，输出技术方案",
+      "agentRole": "dev-planner",
+      "input": "分析以下开发需求，输出技术方案。\n用户需求：{userInput}",
+      "dependencies": [],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "code",
+      "name": "编码实现",
+      "description": "根据方案编写代码",
+      "agentRole": "dev-coder",
+      "input": "基于技术方案，编码实现。\n方案：{plan.output}\n用户需求：{userInput}",
+      "dependencies": ["plan"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 2,
+      "timeoutMs": 300000
+    },
+    {
+      "id": "test",
+      "name": "验证测试",
+      "description": "验证代码正确性",
+      "agentRole": "dev-tester",
+      "input": "验证以下代码的正确性和完整性。\n代码文件：{code.output}\n需求：{userInput}",
+      "dependencies": ["code"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": true,
+      "maxRetries": 2,
+      "timeoutMs": 120000
+    }
+  ]
+}

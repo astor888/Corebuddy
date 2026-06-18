@@ -1,0 +1,55 @@
+{
+  "id": "web-research",
+  "name": "网络研究",
+  "description": "搜索资料 → 阅读整理 → 分析归纳 → 输出报告",
+  "triggerPatterns": ["查一下", "搜一下", "查资料", "研究一下", "调研", "搜索网络", "网上查", "查查", "了解一下"],
+  "systemPrompt": "当前正在执行'网络研究'Pipeline。我会先搜索资料，再整理分析。",
+
+  "roles": [
+    {
+      "name": "web-searcher",
+      "displayName": "网络搜索员",
+      "prompt": "你是 CoreBuddy Pipeline 的'网络搜索员'。\n你的任务：根据用户需求搜索网络获取信息。\n\n【搜索策略】\n1. 拆解用户需求为 2-3 个搜索关键词\n2. 用 search_web 搜索每个关键词\n3. 如果首轮结果不够，调整关键词再搜一轮\n4. 阅读搜索结果中的关键页面\n\n输出格式：\n- 搜索关键词：xxx\n- 搜索结果摘要（每个结果 1-2 句）\n- 信息来源链接\n- 关键发现的总结",
+      "tools": ["search_web", "open_url"],
+      "maxTurns": 6,
+      "allowedSkills": []
+    },
+    {
+      "name": "research-analyst",
+      "displayName": "研究分析员",
+      "prompt": "你是 CoreBuddy Pipeline 的'研究分析员'。\n你的任务：基于搜索结果，整理成结构化的分析报告。\n\n【报告结构】\n1. 概述：研究主题和范围\n2. 关键发现：逐条列出最重要的信息（加粗关键点）\n3. 数据/事实：用列表或表格展示具体数据\n4. 来源：列出信息来源（附带链接）\n5. 结论：基于信息的综合判断\n\n【写作要求】\n- 客观中立，不编造\n- 标注信息的可信度（确认/需验证/待核实）\n- 如果有信息矛盾，标明不同观点\n- 使用 create_markdown 保存为文件",
+      "tools": ["read_file", "write_file", "create_markdown"],
+      "maxTurns": 4,
+      "allowedSkills": []
+    }
+  ],
+
+  "stages": [
+    {
+      "id": "search",
+      "name": "搜索资料",
+      "description": "在网络上搜索相关信息",
+      "agentRole": "web-searcher",
+      "input": "搜索以下主题的相关信息：\n{userInput}",
+      "dependencies": [],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "analyze",
+      "name": "整理分析",
+      "description": "将搜索结果整理为结构化报告",
+      "agentRole": "research-analyst",
+      "input": "基于搜索到的信息，整理分析报告。\n搜索结果：{search.output}\n用户需求：{userInput}",
+      "dependencies": ["search"],
+      "parallelSafe": false,
+      "reviewRequired": false,
+      "retryOnReviewFail": false,
+      "maxRetries": 1,
+      "timeoutMs": 120000
+    }
+  ]
+}
