@@ -150,9 +150,22 @@ export function loadMemory(): Memory {
       cache = { memory: mem, loadedAt: Date.now() }
       return mem
     }
-  } catch {}
+  } catch (e: unknown) {
+    console.error('[memory] Failed to load memory.json:', e instanceof Error ? e.message : String(e))
+    // Try to recover from .bak file
+    try {
+      if (fs.existsSync(MEM_BAK_PATH())) {
+        const raw = JSON.parse(fs.readFileSync(MEM_BAK_PATH(), 'utf-8'))
+        const mem = migrateMemory(raw)
+        cache = { memory: mem, loadedAt: Date.now() }
+        console.warn('[memory] Recovered from backup')
+        return mem
+      }
+    } catch {}
+    // Do NOT overwrite corrupted data — user may want to recover it
+    console.error('[memory] Using defaults without saving to disk')
+  }
   const def = defaultMemory()
-  saveMemory(def)
   return def
 }
 

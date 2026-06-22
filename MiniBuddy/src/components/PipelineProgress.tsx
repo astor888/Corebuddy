@@ -48,7 +48,7 @@ const roleTextColors: Record<string, string> = {
 }
 
 export function PipelineProgress({ state }: { state: PipelineProgressState }) {
-  if (!state.active || state.stages.length === 0) return null
+  if (!state?.active || !state?.stages?.length) return null
 
   return (
     <div className="mx-4 mt-1 mb-2 p-3 rounded-xl bg-[#FAFAFA] border border-[#E5E6EB]">

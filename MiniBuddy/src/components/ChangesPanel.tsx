@@ -2,7 +2,7 @@ import React from 'react'
 import { iconSVG } from './shared'
 
 export function ChangesPanel({ msgs }: { msgs: Array<{ id: string; role: string; content: string; time: string }> }) {
-  const toolMsgs = msgs.filter(m => m.role === 'tool')
+  const toolMsgs = (msgs || []).filter(m => m.role === 'tool')
   return (
     <div className="text-xs text-[#4E5969]">
       <div className="font-medium text-[#1D2129] mb-2">操作历史</div>
@@ -14,10 +14,11 @@ export function ChangesPanel({ msgs }: { msgs: Array<{ id: string; role: string;
       ) : (
         <div className="space-y-1.5">
           {toolMsgs.map((m, i) => {
-            const nm = m.content.match(/Tool "(\w+)" result/)
+            const c = m.content || ''
+            const nm = c.match(/Tool "(\w+)" result/)
             const toolName = nm ? nm[1] : 'tool'
-            const isError = m.content.includes('失败') || m.content.includes('错误')
-            const content = m.content.replace(/^Tool "\w+" result:\s*/m, '').trim()
+            const isError = c.includes('失败') || c.includes('错误')
+            const content = c.replace(/^Tool "\w+" result:\s*/m, '').trim()
             const shortContent = content.length > 80 ? content.slice(0, 80) + '...' : content
             const isFileCreate = /(?:已写入|已创建|已生成)/.test(content)
             return (

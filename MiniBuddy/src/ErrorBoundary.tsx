@@ -6,21 +6,26 @@ interface Props {
 interface State {
   hasError: boolean
   error?: Error
+  resetKey: number
 }
 
 export class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
     super(props)
-    this.state = { hasError: false }
+    this.state = { hasError: false, resetKey: 0 }
   }
 
-  static getDerivedStateFromError(error: Error): State {
+  static getDerivedStateFromError(error: Error): Partial<State> {
     return { hasError: true, error }
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('[ErrorBoundary] Caught:', error.message)
     console.error('[ErrorBoundary] Stack:', errorInfo.componentStack)
+  }
+
+  handleReset = () => {
+    this.setState({ hasError: false, error: undefined, resetKey: this.state.resetKey + 1 })
   }
 
   render() {
@@ -36,7 +41,7 @@ export class ErrorBoundary extends Component<Props, State> {
             {this.state.error?.message || '未知错误'}
           </p>
           <button
-            onClick={() => this.setState({ hasError: false, error: undefined })}
+            onClick={this.handleReset}
             className="px-4 py-1.5 rounded-lg bg-[#1D2129] text-white text-[12px] hover:bg-[#4E5969] transition-colors"
           >
             重新加载
@@ -44,6 +49,6 @@ export class ErrorBoundary extends Component<Props, State> {
         </div>
       )
     }
-    return this.props.children
+    return <div key={this.state.resetKey}>{this.props.children}</div>
   }
 }

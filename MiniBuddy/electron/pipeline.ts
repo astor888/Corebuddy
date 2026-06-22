@@ -664,7 +664,7 @@ async function executeStage(
   })
 
   // 查找这个 stage 对应的 agent role
-  const role = [...BUILTIN_ROLES, ...(pipelineDefRoles(run.pipelineId))].find(r => r.name === stage.agentRole)
+  const role = [...Object.values(BUILTIN_ROLES), ...(pipelineDefRoles(run.pipelineId))].find(r => r.name === stage.agentRole)
 
   // 构建 sub-agent 的任务描述（模板替换）
   const task = buildStageTask(stage, run, userInput)
@@ -682,6 +682,7 @@ async function executeStage(
     task: `${task}\n\n${skillsPrompt ? `## 可用技能\n${skillsPrompt}\n` : ''}`,
     context: role?.prompt || '',
     tools,
+    timeoutMs: stage.timeoutMs || 300_000, // Use stage-configured timeout
   }
 
   try {
@@ -860,5 +861,5 @@ export function getBuiltinPipelines(): PipelineDefinition[] {
 }
 
 export function getBuiltinRoles(): AgentRole[] {
-  return { ...BUILTIN_ROLES }
+  return Object.values(BUILTIN_ROLES)
 }

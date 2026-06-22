@@ -101,12 +101,9 @@ export function runPreToolHooks(ctx: HookContext): HookResult {
         result.notes.push(`[PreToolUse] ${hook.toolPattern}: 执行 ${ctx.toolName}`)
         break
       case 'modify':
-        if (hook.script) {
-          try {
-            const fn = new Function('params', hook.script)
-            result.modifiedParams = fn(ctx.params)
-          } catch {}
-        }
+        // modify action is reserved for future safe parameter transformation
+        // Script-based modification has been disabled for security reasons
+        result.notes.push(`[PreToolUse] ${hook.toolPattern}: modify action is disabled for security`)
         break
     }
   }

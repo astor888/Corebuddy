@@ -1,30 +1,54 @@
 import React, { useState, useEffect } from 'react'
 import type { PermissionLevel } from '../types/electron'
 
-export function SettingsModal({ apiKey, userName, perm, autoConfig, onApiKeyChange, onNameChange, onPermChange, onAutoConfigChange, onClose, onModelsChange }: {
+export function SettingsModal({ apiKey, userName, perm, autoConfig, onApiKeyChange, onNameChange, onPermChange, onAutoConfigChange, onClose, onModelsChange, focusModelKey }: {
   apiKey: string; userName: string; perm: PermissionLevel
   autoConfig: { defaultModel: string; imageModel: string }
   onApiKeyChange: (v: string) => void; onNameChange: (v: string) => void
   onPermChange: (v: PermissionLevel) => void; onAutoConfigChange: (v: { defaultModel: string; imageModel: string }) => void
   onClose: () => void
   onModelsChange: () => void
+  focusModelKey?: string // 打开时自动展开此模型的 Key 编辑
 }) {
   const [adding, setAdding] = useState(false)
   const [newModel, setNewModel] = useState({ id: '', name: '', apiUrl: '', apiKey: '' })
   const [modelList, setModelList] = useState<Array<{ id: string; name: string; apiUrl: string; apiKey?: string }>>([])
+  const [editingKey, setEditingKey] = useState<string | null>(null)
+  const [editKeyValue, setEditKeyValue] = useState('')
+  const [savingKey, setSavingKey] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
   useEffect(() => {
     const a = window.electronAPI as any
     if (a?.models) a.models.list().then((cfg: any) => {
-      if (cfg?.models) setModelList(cfg.models)
-    }).catch(() => {})
+      if (cfg?.models) {
+        setModelList(cfg.models)
+        if (focusModelKey) {
+          const target = cfg.models.find((m: any) => m.id === focusModelKey)
+          if (target && !target.apiKey) {
+            setEditingKey(focusModelKey)
+            setEditKeyValue('')
+          }
+        }
+      }
+    }).catch(() => { setError('加载模型列表失败') })
+      .finally(() => setLoading(false))
   }, [])
 
   const addModel = async () => {
     try {
       const a = window.electronAPI as any
-      if (!newModel.id || !newModel.name || !newModel.apiUrl) return
-      const r = await a.models.add(newModel)
+      const id = newModel.id.trim()
+      const name = newModel.name.trim()
+      const apiUrl = newModel.apiUrl.trim()
+      if (!id || !name || !apiUrl) {
+        setError('请填写所有必填字段（名称、ID、API 端点）')
+        return
+      }
+      setError('')
+      const r = await a.models.add({ id, name, apiUrl, apiKey: newModel.apiKey.trim() })
       if (r?.success) {
         setNewModel({ id: '', name: '', apiUrl: '', apiKey: '' })
         setAdding(false)
@@ -32,22 +56,52 @@ export function SettingsModal({ apiKey, userName, perm, autoConfig, onApiKeyChan
         if (cfg?.models) setModelList(cfg.models)
         onModelsChange()
       } else {
-        alert(r?.error || '添加失败')
+        setError(r?.error || '添加失败')
       }
     } catch (e: any) {
-      alert('添加失败: ' + (e?.message || '未知错误'))
+      setError('添加失败: ' + (e?.message || '未知错误'))
     }
   }
 
   const removeModel = async (id: string) => {
+    if (confirmDelete !== id) {
+      setConfirmDelete(id)
+      return
+    }
     try {
+      setError('')
+      setConfirmDelete(null)
       const a = window.electronAPI as any
       await a.models.remove(id)
       const cfg = await a.models.list()
       if (cfg?.models) setModelList(cfg.models)
       onModelsChange()
     } catch (e: any) {
-      alert('删除失败: ' + (e?.message || '未知错误'))
+      setError('删除失败: ' + (e?.message || '未知错误'))
+    }
+  }
+
+  const saveModelKey = async (id: string) => {
+    if (savingKey) return
+    setSavingKey(true)
+    setError('')
+    try {
+      const a = window.electronAPI as any
+      // Optimistic update: apply key change locally first, then save
+      const updated = modelList.map((m: any) => m.id === id ? { ...m, apiKey: editKeyValue } : m)
+      setModelList(updated)
+      await a.models.save({ models: updated, defaultModel: undefined })
+      onModelsChange()
+    } catch (e: any) {
+      setError('保存失败: ' + (e?.message || '未知错误'))
+      // Rollback: re-fetch from backend
+      const a = window.electronAPI as any
+      const cfg = await a.models.list().catch(() => null)
+      if (cfg?.models) setModelList(cfg.models)
+    } finally {
+      setSavingKey(false)
+      setEditingKey(null)
+      setEditKeyValue('')
     }
   }
 
@@ -55,6 +109,14 @@ export function SettingsModal({ apiKey, userName, perm, autoConfig, onApiKeyChan
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20" onClick={onClose}>
       <div className="bg-white rounded-xl shadow-2xl p-6 w-[480px] max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <h2 className="text-lg font-semibold text-[#1D2129] mb-5">设置</h2>
+
+        {error && (
+          <div className="mb-4 p-3 bg-[#FFF3EB] border border-[#FFD1B8] rounded-lg text-xs text-[#D9692E] flex items-center gap-2">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><circle cx="8" cy="8" r="6.5"/><path d="M8 5v3M8 11v.01"/></svg>
+            {error}
+            <button onClick={() => setError('')} className="ml-auto text-[#C9CDD4] hover:text-[#86909C]">✕</button>
+          </div>
+        )}
 
         <label className="text-sm text-[#4E5969] block mb-1.5">名字</label>
         <input value={userName} onChange={e => onNameChange(e.target.value)}
@@ -98,17 +160,49 @@ export function SettingsModal({ apiKey, userName, perm, autoConfig, onApiKeyChan
           )}
 
           <div className="space-y-1">
-            {modelList.map(m => (
-              <div key={m.id} className="flex items-center justify-between py-2 px-2 rounded hover:bg-[#F7F8FA] text-[13px]">
-                <div className="flex-1 min-w-0">
-                  <span className="text-[#1D2129]">{m.name}</span>
-                  <span className="text-[10px] text-[#C9CDD4] ml-2">{m.id}</span>
-                  {m.apiKey && <span className="text-[10px] text-[#61C454] ml-2" title="已配置独立 API Key">🔑</span>}
+            {loading ? (
+              <div className="py-4 text-center text-xs text-[#C9CDD4]">加载中...</div>
+            ) : (
+              modelList.map(m => (
+              <div key={m.id}>
+                <div className="flex items-center justify-between py-2 px-2 rounded hover:bg-[#F7F8FA] text-[13px]">
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[#1D2129]">{m.name}</span>
+                    <span className="text-[10px] text-[#C9CDD4] ml-2">{m.id}</span>
+                    {m.apiKey && <span className="text-[10px] text-[#61C454] ml-2" title="已配置独立 API Key">🔑</span>}
+                    {!m.apiKey && editingKey !== m.id && (
+                      <button onClick={() => { setEditingKey(m.id); setEditKeyValue('') }}
+                        className="text-[10px] text-[#165DFF] hover:underline ml-2">设置 Key</button>
+                    )}
+                  </div>
+                  <button onClick={() => removeModel(m.id)}
+                    className={`text-[10px] px-1 transition-colors ${
+                      confirmDelete === m.id
+                        ? 'text-[#EC5B56] font-medium'
+                        : 'text-[#C9CDD4] hover:text-[#EC5B56]'
+                    }`}>
+                    {confirmDelete === m.id ? '确认删除?' : '删除'}
+                  </button>
                 </div>
-                <button onClick={() => removeModel(m.id)}
-                  className="text-[10px] text-[#C9CDD4] hover:text-[#EC5B56] px-1">删除</button>
+                {editingKey === m.id && (
+                  <div className="bg-[#F7F8FA] rounded-lg p-3 mb-1 flex gap-2 items-center">
+                    <input type="password" value={editKeyValue}
+                      onChange={e => setEditKeyValue(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') saveModelKey(m.id) }}
+                      placeholder="输入该模型的专属 API Key..."
+                      className="flex-1 h-9 rounded text-xs px-2.5 border border-[#E5E6EB] outline-none focus:border-[#165DFF]"
+                      autoFocus />
+                    <button onClick={() => saveModelKey(m.id)} disabled={savingKey || !editKeyValue.trim()}
+                      className="h-9 px-3 rounded bg-[#165DFF] text-white text-xs font-medium hover:bg-[#0E4BD8] disabled:opacity-50">
+                      {savingKey ? '保存中...' : '保存'}
+                    </button>
+                    <button onClick={() => { setEditingKey(null); setEditKeyValue('') }}
+                      className="h-9 px-2 rounded text-xs text-[#86909C] hover:text-[#1D2129]">取消</button>
+                  </div>
+                )}
               </div>
-            ))}
+            ))
+            )}
           </div>
         </div>
 

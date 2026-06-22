@@ -85,6 +85,7 @@ export function SkillsView() {
   const handleUninstall = async (id: string) => {
     const a = api()
     if (!a?.skills) return
+    setInstalling(id)
     try {
       const ok = await a.skills.uninstall(id)
       if (ok) {
@@ -98,6 +99,7 @@ export function SkillsView() {
     } catch {
       setNotify('卸载失败')
     } finally {
+      setInstalling(null)
       setTimeout(() => setNotify(null), 3000)
     }
   }
@@ -208,9 +210,9 @@ export function SkillsView() {
                   </div>
                   <div className="flex gap-2">
                     {selectedSkill.installed ? (
-                      <button onClick={() => handleUninstall(selectedSkill.id)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E5E6EB] text-sm text-[#F53F3F] hover:bg-[#FFF0F0] transition-colors">
-                        {iconSVG('logout')}<span>卸载</span>
+                      <button onClick={() => handleUninstall(selectedSkill.id)} disabled={installing === selectedSkill.id}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E5E6EB] text-sm text-[#F53F3F] hover:bg-[#FFF0F0] transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        {iconSVG('logout')}<span>{installing === selectedSkill.id ? '卸载中...' : '卸载'}</span>
                       </button>
                     ) : (
                       <button onClick={() => handleInstall(selectedSkill.id)} disabled={installing === selectedSkill.id}

@@ -5,6 +5,12 @@ import { app } from 'electron'
 const DATA_DIR = () => path.join(app.getPath('userData'), 'corebuddy-data')
 const CONTEXT_DIR = () => path.join(DATA_DIR(), 'context')
 
+function atomicWriteSync(filePath: string, data: string) {
+  const tmp = filePath + '.tmp'
+  fs.writeFileSync(tmp, data, 'utf-8')
+  fs.renameSync(tmp, filePath)
+}
+
 export interface StoredMessage {
   role: 'user' | 'assistant' | 'system' | 'tool' | 'boundary'
   content: string
@@ -27,7 +33,7 @@ export function addMessage(convId: string, msg: StoredMessage) {
   if (msgs.length > 60) {
     msgs = autoCompact(msgs)
   }
-  fs.writeFileSync(p, JSON.stringify(msgs, null, 2))
+  atomicWriteSync(p, JSON.stringify(msgs, null, 2))
 }
 
 /**
@@ -158,7 +164,7 @@ export function compactContext(convId: string): string {
       isBoundary: true,
       summary,
     }]
-    fs.writeFileSync(p, JSON.stringify(compacted, null, 2))
+    atomicWriteSync(p, JSON.stringify(compacted, null, 2))
     return summary
   } catch { return '' }
 }

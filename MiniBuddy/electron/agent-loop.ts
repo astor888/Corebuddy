@@ -1,7 +1,8 @@
 // Agent Loop — OpenClaw architecture + Claude Code three-layer design
 // Plan → Act (parallel read-only) → Observe → Respond → Compaction → Repeat
 
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, nativeImage } from 'electron'
+import fs from 'fs'
 import { buildSystemPrompt } from './system-prompt'
 import type { PersonaMode, ExecutionMode } from './system-prompt'
 import { getTool, getAllTools, checkPermission, Tool, setApiConfig, getOpenAITools } from './tool-registry'
@@ -15,7 +16,7 @@ import type { PipelineRun } from './pipeline'
 
 export interface AgentMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string
+  content: string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>
 }
 
 export interface ToolCall {
@@ -35,6 +36,8 @@ export interface AgentLoopConfig {
   onRequestPermission?: (toolName: string, toolDesc: string) => Promise<boolean>
   /** Check if this stream has been aborted (for background loading) */
   isAborted?: () => boolean
+  /** AbortSignal for cancelling in-flight HTTP requests */
+  abortSignal?: AbortSignal
   /** Current window for sending events */
   sender?: BrowserWindow
   /** Scene-specific system prompt to inject (e.g. PPT generation workflow) */
@@ -68,12 +71,99 @@ const DEFAULT_CONFIG: Required<AgentLoopConfig> = {
   attachments: [],
 }
 
+// ── Image resize/compress for API size limits ──
+// DeepSeek API has input size limits; large images (10MB+ PNG) produce excessive base64
+// We resize to max 1568px on longest edge, convert to JPEG @ 80% quality, cap at ~500KB output
+const MAX_IMAGE_DIM = 1568
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024 // 5MB — if under this, skip resize
+const IMAGE_QUALITY = 80
+const MAX_BASE64_LENGTH = 600_000 // ~450KB of base64 — safe for all models
+
+function prepareImageForAPI(filePath: string): { base64: string; mime: string } | null {
+  try {
+    const rawBuffer = fs.readFileSync(filePath)
+    
+    // Determine MIME
+    const ext = filePath.toLowerCase()
+    const isPng = ext.endsWith('.png')
+    const isGif = ext.endsWith('.gif')
+    const isWebp = ext.endsWith('.webp')
+    const isBmp = ext.endsWith('.bmp')
+    
+    // If the file is already reasonably small, use as-is
+    if (rawBuffer.length <= MAX_IMAGE_BYTES) {
+      const mime = isPng ? 'image/png' : isGif ? 'image/gif' : isWebp ? 'image/webp' : isBmp ? 'image/bmp' : 'image/jpeg'
+      const base64 = rawBuffer.toString('base64')
+      if (base64.length <= MAX_BASE64_LENGTH) {
+        return { base64, mime }
+      }
+      // Base64 is still too long — fall through to resize
+    }
+    
+    // Resize + compress using Electron's nativeImage (no external deps, works in asar)
+    const img = nativeImage.createFromBuffer(rawBuffer)
+    const size = img.getSize()
+    
+    // Guard against corrupted/empty images
+    if (!size || size.width === 0 || size.height === 0) {
+      console.error('[agent-loop] Invalid image dimensions:', filePath)
+      return null
+    }
+    
+    // If image dimensions are small but buffer is large (uncompressed format), just convert to JPEG
+    if (size.width <= MAX_IMAGE_DIM && size.height <= MAX_IMAGE_DIM) {
+      const base64 = img.toJPEG(IMAGE_QUALITY).toString('base64')
+      if (base64.length <= MAX_BASE64_LENGTH) {
+        return { base64, mime: 'image/jpeg' }
+      }
+    }
+    
+    // Calculate new dimensions preserving aspect ratio
+    let newW = size.width
+    let newH = size.height
+    if (newW > MAX_IMAGE_DIM || newH > MAX_IMAGE_DIM) {
+      const ratio = Math.min(MAX_IMAGE_DIM / newW, MAX_IMAGE_DIM / newH)
+      newW = Math.round(newW * ratio)
+      newH = Math.round(newH * ratio)
+    }
+    
+    const resized = img.resize({ width: newW, height: newH, quality: 'good' })
+    
+    // Try JPEG at quality 80
+    let jpegBuf = resized.toJPEG(IMAGE_QUALITY)
+    let base64 = jpegBuf.toString('base64')
+    
+    // If still too large, step down quality
+    if (base64.length > MAX_BASE64_LENGTH) {
+      const qualities = [60, 40, 25]
+      for (const q of qualities) {
+        jpegBuf = resized.toJPEG(q)
+        base64 = jpegBuf.toString('base64')
+        if (base64.length <= MAX_BASE64_LENGTH) break
+      }
+    }
+    
+    // Final fallback: resize even smaller from already-resized image
+    if (base64.length > MAX_BASE64_LENGTH) {
+      const tinyImg = resized.resize({ width: 640, height: 640, quality: 'good' })
+      jpegBuf = tinyImg.toJPEG(40)
+      base64 = jpegBuf.toString('base64')
+    }
+    
+    return { base64, mime: 'image/jpeg' }
+  } catch (e: unknown) {
+    console.error('[agent-loop] Image preparation failed:', filePath, e instanceof Error ? e.message : String(e))
+    return null
+  }
+}
+
 export async function agentLoop(
   userMessage: string,
   convId: string,
   config: AgentLoopConfig,
   sender: BrowserWindow
 ): Promise<void> {
+
   const cfg = { ...DEFAULT_CONFIG, ...config }
   // Broadcast to ALL windows (supports background loading when user switches convs)
   const send = (channel: string, data?: any) => {
@@ -162,23 +252,54 @@ export async function agentLoop(
   ]
 
   // ★ 注入附件信息到对话 ★
-  // All attachments (images + documents) go as text notes — LLM uses tools to process
-  // Note: DeepSeek V4 doesn't support native multimodal image_url format yet
+  // 检测模型是否支持多模态（可直接"看"图片）
+  const isVisionModel = /vision|vl|gemini|gpt-4o|claude|qwen.*vl|image/i.test(cfg.model)
   if (cfg.attachments && cfg.attachments.length > 0) {
-    const notes = cfg.attachments.map((a: any) => {
-      if (a.type === 'image') {
-        return `- 图片附件: ${a.path}（如需分析图片内容，请使用 read_image_content 工具）`
-      }
-      return `- 文件附件: ${a.path}（如需读取文件内容，请使用 read_document 工具）`
-    }).join('\n')
-    
-    // Replace the last user message (which was loaded from context at step 3)
-    // with the attachment-augmented version to avoid duplicate messages
+    const imageAttachments = cfg.attachments.filter(a => a.type === 'image')
+    const docAttachments = cfg.attachments.filter(a => a.type !== 'image')
+
+    // 找到最后一条 user 消息的位置，准备替换或追加
     const lastUserIdx = messages.map(m => m.role).lastIndexOf('user')
-    if (lastUserIdx >= 0) {
-      messages[lastUserIdx] = { role: 'user', content: `${userMessage}\n\n${notes}` }
+
+    if (isVisionModel && imageAttachments.length > 0) {
+      // ★ 多模态模型：图片以 base64 直传给模型 ★
+      // 空文本时给默认提示，避免 API 拒绝空 content
+      const textPrompt = userMessage.trim() || '请分析这张图片的内容'
+      const contentParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
+        { type: 'text', text: textPrompt }
+      ]
+      for (const img of imageAttachments) {
+        try {
+          const prepared = prepareImageForAPI(img.path)
+          if (prepared) {
+            contentParts.push({ type: 'image_url', image_url: { url: `data:${prepared.mime};base64,${prepared.base64}` } })
+          }
+        } catch {}
+      }
+      // 文档附件仍然以文本提示
+      if (docAttachments.length > 0) {
+        const docNotes = docAttachments.map(a => `- 文件附件: ${a.path}（如需读取，请使用 read_document 工具）`).join('\n')
+        contentParts.push({ type: 'text', text: docNotes })
+      }
+
+      if (lastUserIdx >= 0) {
+        (messages[lastUserIdx] as any) = { role: 'user', content: contentParts }
+      } else {
+        (messages as any[]).push({ role: 'user', content: contentParts })
+      }
     } else {
-      messages.push({ role: 'user', content: `${userMessage}\n\n${notes}` })
+      // 非多模态模型：附件以纯文本提示注入
+      const notes = cfg.attachments.map((a: any) => {
+        if (a.type === 'image') return `- 图片附件: ${a.path}`
+        return `- 文件附件: ${a.path}（如需读取文件内容，请使用 read_document 工具）`
+      }).join('\n')
+      // 纯图片无文字 → 自动告诉模型执行 OCR
+      const userText = userMessage.trim() || (imageAttachments.length > 0 ? '请使用 read_image_content 工具识别图片中的文字内容' : '')
+      if (lastUserIdx >= 0) {
+        messages[lastUserIdx] = { role: 'user', content: `${userText}\n\n${notes}` }
+      } else {
+        messages.push({ role: 'user', content: `${userText}\n\n${notes}` })
+      }
     }
   }
 
@@ -552,19 +673,38 @@ async function callLLM(
 
   try {
     const apiBase = cfg.apiUrl || 'https://api.deepseek.com/v1'
-    const response = await fetch(`${apiBase}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${cfg.apiKey}`,
-      },
-      body: JSON.stringify(requestBody),
-    })
+    const apiUrl = `${apiBase}/chat/completions`
 
-    if (!response.ok) {
-      const errText = await response.text()
+    // Retry on rate-limit (429) and server errors (5xx) with exponential backoff
+    const MAX_RETRIES = 3
+    let response: Response | null = null
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 8000)
+        await new Promise(r => setTimeout(r, delay))
+        if (cfg.isAborted?.()) return { content: '', toolCalls: [] }
+      }
+      response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${cfg.apiKey}`,
+        },
+        body: JSON.stringify(requestBody),
+        signal: cfg.abortSignal,
+      }).catch(() => null)
+      if (!response) continue
+      if (response.status === 429 || response.status >= 500) {
+        if (attempt < MAX_RETRIES - 1) continue
+      }
+      break
+    }
+
+    if (!response || !response.ok) {
+      const status = response?.status || 0
+      const errText = response ? await response.text().catch(() => '') : ''
       const errMsg = errText.length > 300 ? errText.slice(0, 300) + '...' : errText
-      send('chat:streamError', `API 错误 (${response.status}): ${errMsg}`)
+      send('chat:streamError', `API 错误 (${status}${!response ? ', 网络不可达' : ''}${attempt > 0 ? `, 已重试${attempt}次` : ''}): ${errMsg || '无响应'}`)
       return { content: '', toolCalls: [] }
     }
 
@@ -726,7 +866,32 @@ const COMPACT_THRESHOLD = 51000  // 80% — compact via LLM summary
 const TRIM_THRESHOLD    = 57000  // 90% — last resort, trim oldest messages
 
 /** Rough token estimation — 1 token ≈ 3 chars for CJK, ≈ 4 chars for Latin */
-function estimateTokens(text: string): number {
+function estimateTokens(content: any): number {
+  // 多模态消息：content 是数组，提取所有 text 部分
+  if (Array.isArray(content)) {
+    let tokens = 0
+    for (const part of content) {
+      if (part.type === 'text' && typeof part.text === 'string') {
+        tokens += estimateTokensText(part.text)
+      } else if (part.type === 'image_url') {
+        // Realistic token estimation: base64 data ≈ 1 token per 3 chars
+        // plus overhead for the data URI wrapper (~20 tokens)
+        const url = typeof part.image_url?.url === 'string' ? part.image_url.url : ''
+        const dataIdx = url.indexOf(';base64,')
+        if (dataIdx > 0) {
+          const base64Len = url.length - dataIdx - 8  // skip ";base64,"
+          tokens += Math.ceil(base64Len / 3) + 20
+        } else {
+          tokens += 85 // URL-only (no inline data) — standard placeholder
+        }
+      }
+    }
+    return tokens
+  }
+  if (typeof content !== 'string') return 0
+  return estimateTokensText(content)
+}
+function estimateTokensText(text: string): number {
   let tokens = 0
   for (const ch of text) {
     tokens += (ch >= '\u4e00' && ch <= '\u9fff') || (ch >= '\u3000' && ch <= '\u303f') ? 0.7 : 0.25
@@ -737,7 +902,7 @@ function estimateTokens(text: string): number {
 function estimateTotalTokens(msgs: AgentMessage[]): number {
   let total = 0
   for (const m of msgs) {
-    total += estimateTokens(m.role) + estimateTokens(m.content) + 4
+    total += estimateTokensText(m.role) + estimateTokens(m.content) + 4
   }
   return total
 }
@@ -857,6 +1022,7 @@ async function summarizeMessages(
       'Authorization': `Bearer ${cfg.apiKey}`,
     },
     body,
+    signal: cfg.abortSignal,
   })
 
   if (!resp.ok) throw new Error(`Compaction API error: ${resp.status}`)

@@ -127,6 +127,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     install: (id: string) => ipcRenderer.invoke('skills:install', id),
     uninstall: (id: string) => ipcRenderer.invoke('skills:uninstall', id),
   },
+  experts: {
+    list: () => ipcRenderer.invoke('experts:list'),
+    active: () => ipcRenderer.invoke('experts:active'),
+    activate: (id: string) => ipcRenderer.invoke('experts:activate', id),
+    deactivate: () => ipcRenderer.invoke('experts:deactivate'),
+  },
   connectors: {
     list: () => ipcRenderer.invoke('connectors:list'),
     connect: (id: string, config: Record<string, string>) => ipcRenderer.invoke('connectors:connect', id, config),
@@ -146,4 +152,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getInfo: (filePath: string) => ipcRenderer.invoke('file:getInfo', filePath),
   },
   openExternal: (url: string) => ipcRenderer.invoke('openExternal', url),
+  ui: {
+    onOpenSettings: (cb: (data: { tab: string; focusModel: string }) => void) => {
+      const h = (_: any, d: any) => cb(d)
+      ipcRenderer.on('ui:openSettings', h)
+      return () => ipcRenderer.removeListener('ui:openSettings', h)
+    },
+  },
+  storyboard: {
+    generate: (prompt: string) => ipcRenderer.invoke('storyboard:generate', prompt),
+  },
+  videoGen: {
+    generate: (prompt: string) => ipcRenderer.invoke('video-gen:generate', prompt),
+    synthesize: (shots: Array<{ name: string; videoUrl: string }>) => ipcRenderer.invoke('video-gen:synthesize', shots),
+  },
 })

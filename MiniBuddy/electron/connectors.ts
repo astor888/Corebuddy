@@ -1,6 +1,10 @@
 // ── 连接器注册表 ──
 // 预装连接器配置系统，类比 WorkBuddy 的 30+ 连接器
 
+import path from 'path'
+import fs from 'fs'
+import { app } from 'electron'
+
 export interface ConnectorConfig {
   id: string
   name: string
@@ -14,8 +18,34 @@ export interface ConnectorConfig {
   helpUrl?: string
 }
 
-// ── 存储连接器状态（运行时） ──
+// ── 连接器状态持久化 ──
+const STATUS_PATH = () => path.join(app.getPath('userData'), 'corebuddy-data', 'connector-status.json')
 const connectorStatuses = new Map<string, ConnectorConfig['status']>()
+
+function loadStatuses() {
+  try {
+    if (fs.existsSync(STATUS_PATH())) {
+      const data = JSON.parse(fs.readFileSync(STATUS_PATH(), 'utf-8'))
+      for (const [k, v] of Object.entries(data)) {
+        connectorStatuses.set(k, v as ConnectorConfig['status'])
+      }
+    }
+  } catch {}
+}
+
+function saveStatuses() {
+  try {
+    fs.mkdirSync(path.dirname(STATUS_PATH()), { recursive: true })
+    const obj: Record<string, string> = {}
+    connectorStatuses.forEach((v, k) => { obj[k] = v })
+    const tmp = STATUS_PATH() + '.tmp'
+    fs.writeFileSync(tmp, JSON.stringify(obj), 'utf-8')
+    fs.renameSync(tmp, STATUS_PATH())
+  } catch {}
+}
+
+// Load on module init
+loadStatuses()
 
 function c(id: string): ConnectorConfig {
   return PRESET_CONNECTORS.find(c => c.id === id)!
@@ -443,6 +473,7 @@ export function getDisconnectedConnectors(): ConnectorConfig[] {
 
 export function setConnectorStatus(id: string, status: ConnectorConfig['status']) {
   connectorStatuses.set(id, status)
+  saveStatuses()
 }
 
 export function getAllConnectorStatuses(): Record<string, string> {

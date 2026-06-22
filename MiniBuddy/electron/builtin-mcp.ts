@@ -28,7 +28,12 @@ export function getTestMcpTools(): McpTool[] {
       inputSchema: { type: 'object', properties: { expr: { type: 'string' } } },
       handler: async (args) => {
         try {
-          const val = Function(`"use strict"; return (${args.expr || '0'})`)()
+          // Safe math evaluation: only allow numbers, operators, parens, spaces, and dots
+          const expr = (args.expr || '0').trim()
+          if (!/^[\d+\-*/().%\s]+$/.test(expr) || expr.length > 200) {
+            return `计算错误: 表达式包含不允许的字符`
+          }
+          const val = Function(`"use strict"; return (${expr})`)()
           return `结果: ${args.expr} = ${val}`
         } catch (e: unknown) { const msg = e instanceof Error ? e.message : String(e); return `计算错误: ${msg}` }
       },

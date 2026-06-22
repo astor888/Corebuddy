@@ -19,6 +19,7 @@ import { MoreView } from './components/MoreView'
 import { SettingsModal } from './components/SettingsModal'
 import { PipelineProgress } from './components/PipelineProgress'
 import type { PipelineProgressState } from './components/PipelineProgress'
+import { VideoGenWizard } from './components/VideoGenWizard'
 
 // ====== Types & Interfaces ======
 
@@ -38,7 +39,8 @@ interface AppState {
   convs: Conv[]; activeId: string | null; msgs: Msg[]
   search: string; input: string; loading: boolean
   view: 'chat' | 'skills' | 'experts' | 'automations' | 'more' | 'connectors'; modelId: string
-  perm: PermissionLevel; mode: ChatMode; persona: 'office' | 'creative' | 'code'; showSet: boolean; showRight: boolean; showMem: boolean
+  videoGenOpen: boolean
+  perm: PermissionLevel; mode: ChatMode; persona: 'office' | 'creative' | 'code'; showSet: boolean; showRight: boolean; showMem: boolean; focusModelKey: string
   rightTab: 'artifacts' | 'files' | 'changes' | 'preview'
   thinking: boolean
   showProfile: boolean
@@ -52,11 +54,11 @@ interface AppState {
   activeScene: string | null
   attachments: Array<{ name: string; path: string; type: string; size: number }>
   pendingTasks: PendingTask[]
-  autoConfig: { defaultModel: string; imageModel: string }
+  autoConfig: { defaultModel: string; imageModel: string; videoModel: string; proModel: string }
 }
 
 // ====== App Version ======
-const APP_VERSION = '1.9.6'
+const APP_VERSION = '1.9.7'
 
 // ====== Scene Data (可后台自定义，当前为模拟数据) ======
 const sceneData: SceneItem[] = [
@@ -124,8 +126,9 @@ export function App() {
   const [s, setS] = useState<AppState>({
     loggedIn: false, userName: '', apiKey: '', convs: [], activeId: null, msgs: [],
     search: '', input: '', loading: false, view: 'chat', modelId: 'auto',
-    perm: 'default', mode: 'craft', persona: 'office', showSet: false, showRight: false, showMem: false,
-    rightTab: 'artifacts', thinking: false, showProfile: false,
+    perm: 'full', mode: 'craft', persona: 'office', showSet: false, showRight: false, showMem: false,
+    rightTab: 'artifacts', thinking: false, showProfile: false, videoGenOpen: false,
+    focusModelKey: '',
     showOnboarding: false, onboardingStep: 0,
     artifacts: [],
     toolStatus: { active: false, names: [], completed: 0, total: 0, action: '' },
@@ -133,7 +136,7 @@ export function App() {
     pipelineStatus: { active: false, pipelineName: '', stages: [], totalStages: 0 }, creditUsed: 0,
     attachments: [],
     pendingTasks: [],
-    autoConfig: { defaultModel: 'deepseek-v4-pro', imageModel: 'deepseek-v4-flash' },
+    autoConfig: { defaultModel: 'deepseek-v4-flash', imageModel: 'deepseek-v4-flash', videoModel: 'agnes-video-v2.0', proModel: 'deepseek-v4-pro' },
     activeScene: null,
   })
   const endRef = useRef<HTMLDivElement>(null)
@@ -228,6 +231,13 @@ export function App() {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [s.msgs])
   useEffect(() => { activeIdRef.current = s.activeId }, [s.activeId])
+  // Listen for main process requesting to open settings (e.g. missing model key)
+  useEffect(() => {
+    if (!api()) return
+    return api()!.ui.onOpenSettings(data => {
+      u({ showSet: true, focusModelKey: data?.focusModel || '' })
+    })
+  }, [ready])
   // Cleanup IPC listeners on unmount
   useEffect(() => () => { cleanupRef.current.forEach(f => f()) }, [])
 
@@ -250,9 +260,14 @@ export function App() {
   }
   const newConv = async () => {
     if (!api()) return
+    // Abort any in-progress generation before switching
+    if (s.activeId && s.loading) {
+      try { await api()!.chat.abort(s.activeId) } catch {}
+      if (cleanupRef.current) { cleanupRef.current(); cleanupRef.current = null }
+    }
     const id = uid()
     await api()!.conv.create(id)
-    u({ activeId: id, msgs: [], input: '', view: 'chat' })
+    u({ activeId: id, msgs: [], input: '', view: 'chat', loading: false })
     loadConvs()
   }
   const delConv = async (id: string) => {
@@ -263,18 +278,26 @@ export function App() {
   }
   const switchConv = async (id: string) => {
     if (id === s.activeId) return
-    if (s.activeId) { try { await api()?.chat.abort(s.activeId) } catch {} }
+    if (s.activeId) {
+      try { await api()?.chat.abort(s.activeId) } catch {}
+      // Clean up stream listeners from previous conversation
+      if (cleanupRef.current) {
+        cleanupRef.current()
+        cleanupRef.current = null
+      }
+    }
     u({ activeId: id, msgs: [], view: 'chat' })
     loadMsgs(id)
   }
 
   const send = async (scenePrompt?: string, presetText?: string, presetAttachments?: Array<{ name: string; path: string; type: string; size: number }>) => {
     const text = presetText || s.input.trim()
-    if (!text || !api()) return
+    const currentAttachments = presetAttachments || s.attachments
+    // 允许纯附件发送（只有图片/文档，无文字也放行）
+    if ((!text && currentAttachments.length === 0) || !api()) return
     if (!s.apiKey) { u({ showSet: true }); return }
 
     // If already loading, add to pending task queue instead of discarding
-    const currentAttachments = presetAttachments || s.attachments
     if (sendingRef.current) {
       const newTask: PendingTask = {
         id: uid(),
@@ -314,6 +337,8 @@ export function App() {
       ? currentAttachments.map(a => a.type === 'image' ? `[img:${a.path}]` : `[附件:${a.path}|${a.name}]`).join('\n') + (text ? '\n\n' + text : '')
       : text
     setS(prev => ({ ...prev, msgs: [...prev.msgs, { id: uid(), role: 'user', content: attachmentText, time: new Date().toISOString() }, aiMsg] }))
+    // 先清理上一轮残留的 IPC 监听器（防止流式内容翻倍）
+    cleanupRef.current.forEach(f => f())
     const cc: Array<() => void> = []
     // Stream chunk — debounce with requestAnimationFrame for performance
     let rafId: ReturnType<typeof requestAnimationFrame> | null = null
@@ -395,11 +420,11 @@ export function App() {
     // Store for cleanup on unmount
     cleanupRef.current = cc
     // Resolve 'auto' model selection based on task context
-    const resolvedModel = resolveAutoModel(s.modelId, currentAttachments, defaultModel)
+    const resolvedModel = resolveAutoModel(s.modelId, text, currentAttachments, defaultModel)
     const resolvedPerm = detectPermission(text)
     // Start message
     try {
-      await api()!.chat.sendMessage(text, resolvedModel, thisConvId, permToNumber(resolvedPerm), s.persona, effectiveScenePrompt || undefined, s.userName || undefined, 'craft', currentAttachments)
+      await api()!.chat.sendMessage(text, resolvedModel, thisConvId, permToNumber(resolvedPerm), s.persona, effectiveScenePrompt || undefined, s.userName || undefined, s.mode, currentAttachments)
     } catch (e: any) {
       sendingRef.current = false
       u({ loading: false })
@@ -414,21 +439,39 @@ export function App() {
   const keyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }
 
   /**
-   * Auto model selection: picks the best model based on task context.
-   * - Image attachments → vision-capable model (deepseek-v4-flash)
-   * - Otherwise → default model (from config)
+   * Auto model selection:
+   * 复杂任务 → deepseek-v4-pro
+   * 普通聊天 → deepseek-v4-flash
+   * 图片识别 → deepseek-v4-flash + OCR 工具
    */
   function resolveAutoModel(
     modelId: string,
+    text: string,
     attachments: Array<{ name: string; path: string; type: string; size: number }>,
     fallbackDefault: string
   ): string {
     if (modelId !== 'auto') return modelId
-    // Image attachments → image model from autoConfig
-    const hasImage = attachments.some(a => a.type === 'image' || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(a.name))
-    if (hasImage) return s.autoConfig.imageModel || 'deepseek-v4-flash'
-    // General tasks → default model from autoConfig
-    return s.autoConfig.defaultModel || fallbackDefault || 'deepseek-v4-pro'
+    const ac = s.autoConfig
+    const hasModel = (id: string) => allModels.some(m => m.id === id) || id === 'auto'
+
+    // Video generation → video model (detect by keywords)
+    const isVideo = /视频|生成视频|制作视频|剪辑|动画|短片|宣传片|配音|分镜|剧本.*视频/.test(text)
+    if (isVideo) {
+      if (hasModel(ac.videoModel)) return ac.videoModel
+      return ac.proModel || 'deepseek-v4-pro'
+    }
+
+    // Complex task → pro model
+    const isComplex = text.length > 200
+      || /项目|分析|报告|代码|开发|部署|架构|重构|优化|调试|数据.*分析|算法|审计/.test(text)
+    if (isComplex) {
+      if (hasModel(ac.proModel)) return ac.proModel
+      return 'deepseek-v4-pro'
+    }
+
+    // Normal chat → default model
+    if (hasModel(ac.defaultModel)) return ac.defaultModel
+    return 'deepseek-v4-flash'
   }
 
   /**
@@ -469,7 +512,7 @@ export function App() {
       return { ...prev, pendingTasks: rest }
     })
     // After state update, dispatch the send with the captured task data
-    if (taskText) {
+    if (taskText || taskAttachments.length > 0) {
       setTimeout(() => { send(undefined, taskText, taskAttachments) }, 50)
     }
   }
@@ -480,14 +523,9 @@ export function App() {
   const currentConv = s.convs.find(c => c.id === s.activeId)
   const rightTabs: Array<{ k: AppState['rightTab']; l: string }> = [{ k: 'artifacts', l: '产物' }, { k: 'files', l: '文件' }, { k: 'changes', l: '变更' }, { k: 'preview', l: '预览' }]
 
-  // Detect permission level based on task content
+  // Detect permission level based on user setting (respects Settings > permission toggle)
   function detectPermission(text: string): PermissionLevel {
-    const writeKeywords = ['写入', '创建', '生成', '写', '修改', '新建', '删除', '保存', '导出', '编译', '运行', '执行', '打包', '部署', '安装', '装个', 'install', 'write', 'create', 'delete', 'build', 'compile', 'run', 'exec', 'deploy', 'save', 'setup']
-    const lower = text.toLowerCase()
-    for (const kw of writeKeywords) {
-      if (lower.includes(kw.toLowerCase())) return 'full'
-    }
-    return 'default'
+    return s.perm // Use the user-configured permission level from settings
   }
 
   // ============== Login Screen ==============
@@ -516,7 +554,13 @@ export function App() {
           <img src={logoText} alt="CoreBuddy" className="w-36 h-auto mx-auto mb-6" />
           <input id="ln" placeholder="你的名字" className="w-full h-11 px-4 rounded-lg border border-[#E5E6EB] text-[15px] outline-none focus:border-[#165DFF] mb-3 placeholder:text-[#C9CDD4]" />
           <input id="lk" type="password" placeholder="DeepSeek API Key（sk-...）" className="w-full h-11 px-4 rounded-lg border border-[#E5E6EB] text-[15px] outline-none focus:border-[#165DFF] mb-5 placeholder:text-[#C9CDD4]" />
-          <button onClick={() => { const n = (document.getElementById('ln') as HTMLInputElement)?.value || ''; const k = (document.getElementById('lk') as HTMLInputElement)?.value || ''; login(n, k) }}
+          <button onClick={() => {
+            const n = (document.getElementById('ln') as HTMLInputElement)?.value?.trim() || ''
+            const k = (document.getElementById('lk') as HTMLInputElement)?.value?.trim() || ''
+            if (!n) { alert('请输入你的名字'); return }
+            if (!k) { alert('请输入 API Key，可在 https://platform.deepseek.com 获取'); return }
+            login(n, k)
+          }}
             className="w-full h-11 rounded-lg bg-[#165DFF] text-white text-[15px] font-medium border-none cursor-pointer hover:bg-[#0E4BD8]">开始使用</button>
           <p className="text-xs text-[#C9CDD4] text-center mt-4">数据全部存于本机，不会上传</p>
         </div>
@@ -692,7 +736,7 @@ export function App() {
           <div className="flex-1 overflow-y-auto">
             <div className="px-3 py-1">
               {[
-                { label: '助理', icon: 'chat', view: 'chat' as const },
+                { label: '对话', icon: 'chat', view: 'chat' as const },
                 { label: '连接器', icon: 'connector', view: 'connectors' as const },
                 { label: '技能', icon: 'plugin', view: 'skills' as const },
                 { label: '专家', icon: 'expert', view: 'experts' as const },
@@ -713,7 +757,7 @@ export function App() {
                 <span className="text-[12px] font-medium text-[#86909C]">任务</span>
                 <span className="text-[11px] text-[#C9CDD4] bg-[#F2F3F5] px-1.5 rounded-full">{s.convs.length}</span>
               </div>
-              {s.convs.slice(0, 8).map(c => {
+              {s.convs.map(c => {
                 const isLoading = convLoading[c.id]
                 return (
                 <div key={c.id} onClick={() => switchConv(c.id)}
@@ -727,7 +771,7 @@ export function App() {
                     <span className="w-1.5 h-1.5 rounded-full bg-[#C9CDD4] shrink-0" />
                   )}
                   <span className="truncate flex-1">{c.title || '新对话'}</span>
-                  <button onClick={e => { e.stopPropagation(); delConv(c.id) }}
+                  <button onClick={e => { e.stopPropagation(); if (confirm(`删除对话"${c.title || '新对话'}"？此操作不可撤销。`)) delConv(c.id) }}
                     className="opacity-0 group-hover:opacity-100 text-[#86909C] hover:text-[#EC5B56] text-xs shrink-0">✕</button>
                 </div>
               )})}
@@ -760,7 +804,7 @@ export function App() {
                       <span className="text-[15px] font-semibold text-[#1D2129]">{s.userName}</span>
                       <span className="text-[11px] bg-[#165DFF]/10 text-[#165DFF] px-2 py-0.5 rounded-full">体验版</span>
                     </div>
-                    <div className="text-[12px] text-[#165DFF] mt-0.5 cursor-pointer hover:underline">升级</div>
+                    <div className="text-[12px] text-[#165DFF] mt-0.5 cursor-pointer hover:underline" onClick={() => { u({ showProfile: false, showSet: true }) }}>升级</div>
                   </div>
                 </div>
               </div>
@@ -769,7 +813,7 @@ export function App() {
               <div className="p-4 border-b border-[#F2F3F5]">
                 <div className="flex items-center justify-between">
                   <span className="text-[13px] font-medium text-[#1D2129]">Buddy 加油站</span>
-                  <span className="text-[13px] text-[#165DFF] cursor-pointer hover:underline">去加油 →</span>
+                  <span className="text-[13px] text-[#165DFF] cursor-pointer hover:underline" onClick={() => { u({ showProfile: false }); alert('积分系统开发中，敬请期待~') }}>去加油 →</span>
                 </div>
                 <div className="flex items-center gap-3 mt-2">
                   <div className="w-8 h-8 rounded-lg bg-[#FFF7E6] flex items-center justify-center text-base">💰</div>
@@ -785,9 +829,9 @@ export function App() {
                 {[
                   { label: '查看记忆', icon: 'data', onClick: () => { u({ showProfile: false, showMem: true }) } },
                   { label: '设置', icon: 'gear', onClick: () => { u({ showProfile: false, showSet: true }) } },
-                  { label: '外观', icon: 'palette' },
-                  { label: '帮助与反馈', icon: 'help' },
-                  { label: '检查更新', icon: 'update' },
+                  { label: '外观', icon: 'palette', onClick: () => { u({ showProfile: false, showSet: true, focusModelKey: '' }) } },
+                  { label: '帮助与反馈', icon: 'help', onClick: () => { window.open('https://github.com/user/corebuddy/issues', '_blank') } },
+                  { label: '检查更新', icon: 'update', onClick: () => { u({ showProfile: false }); alert('当前版本: v' + APP_VERSION) } },
                 ].map(item => (
                   <div key={item.label} onClick={item.onClick}
                     className="flex items-center gap-3 px-4 py-2.5 cursor-pointer text-[13px] text-[#4E5969] hover:bg-[#F7F8FA] transition-colors">
@@ -843,11 +887,19 @@ export function App() {
               const groups: Array<
                 | { type: 'user'; key: string; msg: typeof s.msgs[0] }
                 | { type: 'assistant'; key: string; msgs: ParsedAssistant[] }
+                | { type: 'system'; key: string; msg: typeof s.msgs[0] }
               > = []
 
               for (let gi = 0; gi < s.msgs.length; ) {
                 const m = s.msgs[gi]
                 if (m.role === 'boundary') { gi++; continue }
+
+                // System → system notification group
+                if (m.role === 'system') {
+                  groups.push({ type: 'system', key: m.id, msg: m })
+                  gi++
+                  continue
+                }
 
                 // User → own group
                 if (m.role === 'user') {
@@ -900,8 +952,11 @@ export function App() {
                         }
                       }
 
+                      // Only strip dangerous structural HTML, preserve inline HTML used in code examples
                       if (/<(script|style|html|head|body|meta|link)[^>]*>/i.test(answerText)) {
-                        answerText = answerText.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\s{2,}/g, '\n').trim()
+                        answerText = answerText.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '')
+                          .replace(/<\/?(html|head|body|meta|link)[^>]*>/gi, '')
+                        answerText = answerText.replace(/^\s*\n/gm, '').trim()
                       }
 
                       // Collect tool results for this message
@@ -960,6 +1015,16 @@ export function App() {
                         }
                         return part || null
                       })}
+                    </div>
+                  </div>)
+                  continue
+                }
+
+                // ---- System notification ----
+                if (group.type === 'system') {
+                  els.push(<div key={group.key} className="mx-auto max-w-[85%]">
+                    <div className="bg-[#FFF7E6] border border-[#FFE7BA] text-[12px] text-[#8C6E1F] px-3 py-2 rounded-lg text-center whitespace-pre-wrap break-words">
+                      {group.msg.content}
                     </div>
                   </div>)
                   continue
@@ -1483,6 +1548,24 @@ export function App() {
                     )}
                   </div>
                 )}
+                {/* Separator */}
+                <span className="w-px h-4 bg-[#E5E6EB]" />
+                {/* Mode switch: Craft / Ask / Plan */}
+                <div className="flex items-center bg-[#F2F3F5] rounded-lg p-0.5">
+                  {(['craft', 'ask', 'plan'] as ChatMode[]).map(m => (
+                    <button key={m}
+                      onClick={() => u({ mode: m })}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                        s.mode === m
+                          ? 'bg-white text-[#1D2129] shadow-sm'
+                          : 'text-[#86909C] hover:text-[#4E5969]'
+                      }`}>
+                      {m === 'craft' ? 'Craft' : m === 'ask' ? 'Ask' : 'Plan'}
+                    </button>
+                  ))}
+                </div>
+                {/* Separator */}
+                <span className="w-px h-4 bg-[#E5E6EB]" />
                 {/* File attachment button */}
                 <label className="px-2 py-1 rounded-lg text-xs text-[#86909C] hover:bg-[#F2F3F5] cursor-pointer transition-colors flex items-center gap-1" title="上传文件">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
@@ -1491,6 +1574,12 @@ export function App() {
                     onChange={async e => {
                       const files = e.target.files
                       if (!files) return
+                      // Warn on very large files (>20MB) — backend will auto-resize but user should know
+                      const MAX_UPLOAD_WARN = 20 * 1024 * 1024
+                      const oversized = Array.from(files).filter(f => f.size > MAX_UPLOAD_WARN)
+                      if (oversized.length > 0) {
+                        console.warn(`[CoreBuddy] 大文件上传: ${oversized.map(f => `${f.name}(${(f.size / 1024 / 1024).toFixed(1)}MB)`).join(', ')}，将自动压缩`)
+                      }
                       Array.from(files).forEach(file => {
                         const reader = new FileReader()
                         reader.onload = async () => {
@@ -1534,6 +1623,18 @@ export function App() {
                     </div>
                   )}
                 </div>
+                {/* Summon Expert — navigate to expert center */}
+                <button
+                  onClick={() => u({ view: 'experts' })}
+                  className="px-2 py-1 rounded-lg text-xs text-[#534AB7] hover:bg-[#EEEDFE] cursor-pointer transition-colors flex items-center gap-1 whitespace-nowrap"
+                  title="召唤专家">
+                  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+                    <circle cx="8" cy="5" r="3"/>
+                    <path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/>
+                    <path d="M8 2v3M8 2L6.5 3.5M8 2L9.5 3.5"/>
+                  </svg>
+                  <span>专家</span>
+                </button>
                 <div className="ml-auto" />
                 {s.loading ? (
                   <button onClick={async () => {
@@ -1547,7 +1648,7 @@ export function App() {
                     </svg>
                   </button>
                 ) : (
-                  <button onClick={send} disabled={!s.input.trim()}
+                  <button onClick={send} disabled={!s.input.trim() && s.attachments.length === 0}
                     className="w-8 h-8 rounded-full bg-[#1D2129] text-white border-none flex items-center justify-center disabled:bg-[#E5E6EB] disabled:text-[#C9CDD4] disabled:cursor-not-allowed cursor-pointer hover:bg-[#4E5969] transition-all duration-200"
                     title="发送消息">
                     {/* Paper plane icon (WorkBuddy style) */}
@@ -1568,7 +1669,26 @@ export function App() {
             <SkillsView />
           )}
           {s.view === 'experts' && (
-            <ExpertsView />
+            <ExpertsView
+              onOpenVideoGen={() => u({ videoGenOpen: true })}
+              onCreateConv={async () => {
+                const id = `conv-${Date.now()}`
+                await (window as any).electronAPI?.conv?.create(id)
+                u({ activeId: id, msgs: [], view: 'chat' })
+                return id
+              }}
+              onActivateExpert={(convId, expert) => {
+                u({
+                  activeId: convId,
+                  msgs: [{
+                    id: uid(), role: 'system',
+                    content: expert.agentMd || `你是一个${expert.displayName}专家。`,
+                    time: new Date().toISOString(),
+                  }],
+                  view: 'chat',
+                })
+              }}
+            />
           )}
           {s.view === 'automations' && (
             <AutomationsView />
@@ -1620,11 +1740,12 @@ export function App() {
         userName={s.userName}
         perm={s.perm}
         autoConfig={s.autoConfig}
+        focusModelKey={s.focusModelKey || undefined}
         onApiKeyChange={(v: string) => u({ apiKey: v })}
         onNameChange={(v: string) => { u({ userName: v }); api()?.config.set('userName', v) }}
         onPermChange={(v: PermissionLevel) => u({ perm: v })}
-        onAutoConfigChange={(v: { defaultModel: string; imageModel: string }) => u({ autoConfig: v })}
-        onClose={() => { api()?.config.set('apiKey', s.apiKey); u({ showSet: false }) }}
+        onAutoConfigChange={(v) => u({ autoConfig: v as any })}
+        onClose={() => { api()?.config.set('apiKey', s.apiKey); u({ showSet: false, focusModelKey: '' }) }}
         onModelsChange={() => {
           api()?.models.list().then(cfg => {
             if (cfg?.models) setAllModels(cfg.models)
@@ -1634,6 +1755,9 @@ export function App() {
 
       {/* Memory Viewer Modal */}
       {s.showMem && <MemoryModal onClose={() => u({ showMem: false })} />}
+
+      {/* Video Generation Wizard */}
+      {s.videoGenOpen && <VideoGenWizard onClose={() => u({ videoGenOpen: false })} />}
     </div>
   )
 }

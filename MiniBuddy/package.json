@@ -1,6 +1,6 @@
 {
   "name": "corebuddy",
-  "version": "1.9.6",
+  "version": "1.9.7",
   "description": "Your private AI secretary. Runs locally, data never leaves your machine.",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -19,6 +19,15 @@
       "dist/**/*",
       "dist-electron/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/tesseract.js/**",
+      "node_modules/tesseract.js-core/**",
+      "node_modules/wasm-feature-detect/**",
+      "node_modules/node-fetch/**",
+      "node_modules/regenerator-runtime/**",
+      "node_modules/is-url/**",
+      "dist-electron/ocr-worker.js"
     ],
     "extraResources": [
       {
@@ -44,6 +53,7 @@
     }
   },
   "dependencies": {
+    "cheerio": "^1.2.0",
     "docx": "^8.5.0",
     "highlight.js": "^11.11.1",
     "jszip": "^3.10.1",

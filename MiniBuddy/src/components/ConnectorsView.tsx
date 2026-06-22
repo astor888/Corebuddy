@@ -35,6 +35,7 @@ export function ConnectorsView() {
     const s = statusMap[id]
     if (s === 'connected') return 'connected'
     if (s === 'connecting') return 'connecting'
+    if (s === 'error') return 'error'
     return 'disconnected'
   }
 

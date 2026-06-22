@@ -15,7 +15,8 @@ export interface SubAgentConfig {
   apiUrl?: string
   task: string
   context?: string
-  tools: ToolDef[]  // Sub-agent's available tools (pre-filtered by caller)
+  tools: ToolDef[]
+  timeoutMs?: number // Timeout for the entire sub-agent execution (default 5 min)
 }
 
 interface SubAgentMessage {
@@ -29,8 +30,22 @@ interface SubAgentMessage {
  */
 export async function spawnSubAgent(config: SubAgentConfig): Promise<string> {
   const { apiKey, model, task, context, tools, apiUrl } = config
+  const timeoutMs = config.timeoutMs || 300_000 // 5 min default
 
-  // Sub-agents only use tools provided by caller (L1-L2, no spawn_agent)
+  // Run with overall timeout
+  const result = await Promise.race([
+    runSubAgent(apiKey, model, task, context, tools, apiUrl),
+    new Promise<string>((_, reject) =>
+      setTimeout(() => reject(new Error(`子代理执行超时 (${timeoutMs / 1000}s)`)), timeoutMs)
+    ),
+  ])
+  return result
+}
+
+async function runSubAgent(
+  apiKey: string, model: string, task: string, context: string | undefined,
+  tools: ToolDef[], apiUrl?: string
+): Promise<string> {
   const sysPrompt = buildSubAgentPrompt(tools, task, context)
 
   const messages: SubAgentMessage[] = [
@@ -38,14 +53,27 @@ export async function spawnSubAgent(config: SubAgentConfig): Promise<string> {
     { role: 'user', content: task },
   ]
 
-  // Max 3 tool turns for sub-agents
   const MAX_TURNS = 3
   let turnCount = 0
 
   while (turnCount < MAX_TURNS) {
     turnCount++
 
-    const { content, toolCalls } = await callLLM(messages, apiKey, model, apiUrl)
+    // Retry on transient LLM failures (max 2 retries)
+    let llmResult: { content: string; toolCalls: any[] } | null = null
+    for (let retry = 0; retry < 3; retry++) {
+      try {
+        llmResult = await callLLM(messages, apiKey, model, apiUrl)
+        break
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (retry >= 2) throw new Error(`LLM调用失败(已重试3次): ${msg}`)
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retry)))
+      }
+    }
+    if (!llmResult) return '(子代理LLM调用失败)'
+
+    const { content, toolCalls } = llmResult
 
     if (!content && toolCalls.length === 0) {
       return '(子代理无响应)'
@@ -163,7 +191,6 @@ async function callLLM(
     return { content, toolCalls }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
-    console.error('Sub-agent LLM call failed:', msg)
-    return { content: '', toolCalls: [] }
+    throw new Error(`Sub-agent LLM call failed: ${msg}`)
   }
 }

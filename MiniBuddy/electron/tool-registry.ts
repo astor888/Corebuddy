@@ -4,8 +4,10 @@
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { execSync } from 'child_process'
-import { app, shell } from 'electron'
+import https from 'https'
+import { execSync, fork } from 'child_process'
+import { app, shell, nativeImage } from 'electron'
+import * as cheerio from 'cheerio'
 import { addTodo, markTodoDone, loadMemory, updateProfile, getProfileText, resetProfile } from './memory'
 import { spawnSubAgent } from './sub-agent'
 
@@ -15,14 +17,29 @@ export function setApiConfig(config: { apiKey: string; model: string; apiUrl?: s
   currentApiConfig = config
 }
 
-/** Resolve paths: if relative, default to WorkBuddy outputs directory */
+/** Resolve paths: if relative, default to WorkBuddy outputs directory. Blocks path traversal. */
 function resolveWorkPath(p: string): string {
   if (path.isAbsolute(p)) return p
   // Default to corebuddy-data/outputs/ under userData
   const outputsDir = path.join(app.getPath('userData'), 'corebuddy-data', 'outputs')
   fs.mkdirSync(outputsDir, { recursive: true })
-  return path.join(outputsDir, p)
+  const resolved = path.resolve(outputsDir, p)
+  // Block path traversal: ensure resolved path stays within outputsDir
+  if (!resolved.startsWith(outputsDir + path.sep) && resolved !== outputsDir) {
+    throw new Error(`路径穿越被拒绝: ${p} → 被限制在输出目录内`)
+  }
+  return resolved
 }
+
+// Block reading from known sensitive system paths
+const SENSITIVE_PATH_PREFIXES = [
+  path.join(os.homedir(), '.ssh').toLowerCase(),
+  path.join(os.homedir(), '.gnupg').toLowerCase(),
+  path.join(os.homedir(), '.aws').toLowerCase(),
+  path.join(os.homedir(), '.npmrc').toLowerCase(),
+  path.join(os.homedir(), 'appdata', 'roaming', 'microsoft', 'credentials').toLowerCase(),
+  path.join(os.homedir(), 'appdata', 'local', 'microsoft', 'credentials').toLowerCase(),
+]
 
 // Lazy-load document generators (pure JS, no native deps)
 let docxModule: any = null
@@ -146,6 +163,11 @@ registerTool({
       if (!fs.existsSync(params.path)) return `文件不存在: ${params.path}`
       const stat = fs.statSync(params.path)
       if (stat.isDirectory()) return `路径是目录而非文件: ${params.path}`
+      // Block reading from sensitive system paths
+      const p = path.resolve(params.path).toLowerCase()
+      for (const blocked of SENSITIVE_PATH_PREFIXES) {
+        if (p.startsWith(blocked)) return `安全限制: 无法读取系统敏感路径`
+      }
       const c = fs.readFileSync(params.path, 'utf-8')
       return c.slice(0, 4000) + (c.length > 4000 ? `\n...(截断，共 ${c.length} 字符)` : '')
     } catch (e: unknown) {
@@ -181,6 +203,9 @@ registerTool({
   permission: 4,
   domains: ['code'],
   execute(params) {
+    if (!params?.command || typeof params.command !== 'string') {
+      return '请提供有效的命令'
+    }
     try {
       const r = execSync(params.command, { encoding: 'utf-8', timeout: 30000, windowsHide: true, maxBuffer: 1024 * 1024 })
       return r || '(执行成功)'
@@ -228,23 +253,55 @@ registerTool({
       })
       if (!response.ok) return `搜索失败: HTTP ${response.status}`
       const html = await response.text()
-      
-      // Strip all tags, scripts, styles first
-      const cleanHtml = html
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[\s\S]*?<\/style>/gi, '')
-        .replace(/<[^>]+>/g, '\n')
-        .replace(/&[a-z]+;/gi, ' ')
-        .replace(/&#\d+;/g, ' ')
-      
-      // Split into lines, filter meaningful content
-      const lines = cleanHtml
-        .split('\n')
-        .map(l => l.trim())
-        .filter(l => l.length > 15 && l.length < 300 && !/^\s*$/.test(l))
-        .slice(5, 15) // Skip header noise, take 10 results
-      
-      return `## 搜索: ${query}\n${lines.map((l, i) => `${i + 1}. ${l}`).join('\n')}\n(百度搜索结果摘要)`
+
+      // Check for captcha / bot detection
+      if (html.includes('百度安全验证') || html.includes('验证码') || html.includes('请输入验证码') || html.length < 500) {
+        return `搜索失败: 百度返回验证码页面，请稍后重试`
+      }
+
+      // Parse with cheerio for reliable extraction
+      const $ = cheerio.load(html)
+      const results: string[] = []
+
+      // Try various result containers (Baidu changes DOM frequently)
+      const containers = [
+        '.result', '.c-container', '.result-op',
+        'div[tpl]', 'div[srcid]',
+      ]
+
+      for (const sel of containers) {
+        if (results.length >= 10) break
+        $(sel).each((_, el) => {
+          if (results.length >= 10) return false
+          // Extract meaningful text: title + abstract
+          const $el = $(el)
+          const title = $el.find('h3, .t, .c-title').first().text().trim()
+          const abstract = $el.find('.c-abstract, .c-span-last, .c-row, .content-right_8Zs40, .c-color-text').first().text().trim()
+          const text = (title + ' — ' + abstract).replace(/\s+/g, ' ').trim()
+          if (text.length > 20 && text.length < 500) {
+            results.push(text)
+          }
+        })
+      }
+
+      // Fallback: generic text extraction if no structured results found
+      if (results.length === 0) {
+        $('body').find('h3, h2').each((_, el) => {
+          if (results.length >= 10) return false
+          const $h = $(el)
+          const text = $h.text().trim()
+          const parentText = $h.parent().text().trim().replace(/\s+/g, ' ')
+          if (text.length > 8 && parentText.length > 20 && parentText.length < 400) {
+            results.push(text + ' — ' + parentText.substring(text.length).trim())
+          }
+        })
+      }
+
+      if (results.length === 0) {
+        return `## 搜索: ${query}\n未找到有效搜索结果，百度页面结构可能已更新`
+      }
+
+      return `## 搜索: ${query}\n${results.map((r, i) => `${i + 1}. ${r}`).join('\n')}\n(百度搜索结果摘要)`
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
       return `搜索失败: ${msg}`
@@ -588,6 +645,7 @@ registerTool({
         })
         resolve(`[子代理完成]\n${result}`)
       } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
         resolve(`子代理执行失败: ${msg}`)
       }
     })
@@ -1577,7 +1635,9 @@ registerTool({
       if (query) {
         const isWildcard = query.includes('*') || query.includes('?')
         if (isWildcard) {
-          const regex = new RegExp('^' + query.replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i')
+          // Escape regex special chars to prevent ReDoS, then convert wildcards
+          const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          const regex = new RegExp('^' + escaped.replace(/\\\*/g, '.*').replace(/\\\?/g, '.') + '$', 'i')
           results = results.filter(f => regex.test(path.basename(f.path).toLowerCase()))
         } else {
           results = results.filter(f => path.basename(f.path).toLowerCase().includes(query))
@@ -1748,18 +1808,57 @@ registerTool({
                 })
               ))
             } else if (ext === '.xlsx') {
-              const sheetFile = zipData.file('xl/sharedStrings.xml')
-              const sheetFiles = Object.keys(zipData.files).filter((k: string) => k.startsWith('xl/worksheets/sheet') && k.endsWith('.xml'))
-              const strings: string[] = []
-              if (sheetFile) promises.push(
-                sheetFile.async('text').then((xml: string) => {
-                  const items = xml.match(/<t[^>]*>([^<]+)<\/t>/g) || []
-                  strings.push(...items.map((s: string) => s.replace(/<[^>]+>/g, '')))
-                })
-              )
-              Promise.all(promises).then(() => {
-                if (strings.length > 0) texts.push(`[Excel 表格, ${strings.length} 个文本值]\n${strings.slice(0, 200).join(' | ')}`)
-              })
+              // Parse shared strings + sheet data for complete extraction
+              const sharedStringsXml = zipData.file('xl/sharedStrings.xml')
+              const sheetFiles = Object.keys(zipData.files)
+                .filter((k: string) => k.startsWith('xl/worksheets/sheet') && k.endsWith('.xml'))
+                .sort()
+
+              const parseXlsx = async () => {
+                const shared: string[] = []
+                if (sharedStringsXml) {
+                  try {
+                    const xml = await sharedStringsXml.async('text')
+                    const items = xml.match(/<t[^>]*>([^<]+)<\/t>/g) || []
+                    shared.push(...items.map((s: string) => s.replace(/<[^>]+>/g, '')))
+                  } catch {}
+                }
+
+                const allRows: string[] = []
+                for (let si = 0; si < Math.min(sheetFiles.length, 5); si++) {
+                  try {
+                    const sheet = zipData.file(sheetFiles[si])
+                    if (!sheet) continue
+                    const xml = await sheet.async('text')
+                    const rows = xml.match(/<row[^>]*>[\s\S]*?<\/row>/g) || []
+                    for (const row of rows.slice(0, 200)) {
+                      const cells: string[] = []
+                      // Match all cell types: shared string (t="s"), inline string (t="inlineStr"), number (t="n" or no t)
+                      const cellMatches = row.matchAll(/<c[^>]*?(?:t="(s|inlineStr|n|b)"[^>]*?)?>\s*(?:<v[^>]*?>([^<]+)<\/v>|<is><t[^>]*?>([^<]+)<\/t><\/is>).*?<\/c>/g)
+                      for (const cm of cellMatches) {
+                        const t = cm[1]
+                        const v = cm[2]
+                        const inline = cm[3]
+                        if (t === 'inlineStr' || inline) {
+                          cells.push(inline || '')
+                        } else if (t === 's' && v) {
+                          const idx = parseInt(v)
+                          cells.push(shared[idx] || `[${v}]`)
+                        } else if (v) {
+                          cells.push(v)
+                        }
+                      }
+                      if (cells.length > 0) allRows.push(cells.join('\t'))
+                    }
+                  } catch {}
+                }
+                if (allRows.length > 0) {
+                  texts.push(`[Excel 表格, ${shared.length} 个共享字符串, ${allRows.length} 行数据]\n${allRows.join('\n')}`)
+                } else if (shared.length > 0) {
+                  texts.push(`[Excel 表格, ${shared.length} 个共享字符串]\n${shared.slice(0, 200).join(' | ')}`)
+                }
+              }
+              promises.push(parseXlsx())
             }
 
             Promise.all(promises).then(() => {
@@ -1802,6 +1901,34 @@ registerTool({
 })
 
 // ── read_image_content — OCR 识别图片中的文字 ──
+// tesseract.js 通过 asarUnpack 配置解出 asar，worker_threads 可直接访问
+
+function ensureTesseractLang(langCode: string): string {
+  const cacheDir = path.join(app.getPath('userData'), 'corebuddy-data', 'tesseract', 'traineddata')
+  // Tesseract.js 需要 .traineddata.gz 文件
+  const langFile = path.join(cacheDir, `${langCode}.traineddata.gz`)
+  if (fs.existsSync(langFile)) return cacheDir
+
+  // 下载语言包（压缩版）
+  fs.mkdirSync(cacheDir, { recursive: true })
+  const url = `https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/${langCode}.traineddata.gz`
+  return new Promise<string>((resolve, reject) => {
+    https.get(url, (res) => {
+      if (res.statusCode === 302 || res.statusCode === 301) {
+        https.get(res.headers.location!, (r2) => {
+          const file = fs.createWriteStream(langFile)
+          r2.pipe(file)
+          file.on('finish', () => { file.close(); resolve(cacheDir) })
+        }).on('error', reject)
+        return
+      }
+      const file = fs.createWriteStream(langFile)
+      res.pipe(file)
+      file.on('finish', () => { file.close(); resolve(cacheDir) })
+    }).on('error', reject)
+  })
+}
+
 registerTool({
   name: 'read_image_content',
   description: '使用 OCR 识别图片中的文字内容（中文+英文）。支持 png/jpg 等常见格式。',
@@ -1812,7 +1939,7 @@ registerTool({
   permission: 1,
   parallelSafe: true,
   domains: ['office', 'code', 'creative'],
-  execute(params) {
+  async execute(params) {
     try {
       const filePath = params.path
       if (!filePath || !fs.existsSync(filePath)) return `图片不存在: ${filePath}`
@@ -1822,21 +1949,115 @@ registerTool({
         return `不支持的图片格式: ${ext}。支持: png, jpg, bmp, webp, tiff`
       }
 
-      const Tesseract = require('tesseract.js')
-      return new Promise((resolve) => {
-        Tesseract.recognize(filePath, lang, {
-          logger: (m: any) => { /* silent */ }
-        }).then((result: any) => {
-          const text = result.data.text || ''
-          if (!text.trim()) resolve('图片中未识别到文字。请确认: 1) 图片包含清晰的文字 2) 文字为中文或英文')
-          else {
-            const confidence = Math.round((result.data.confidence || 0))
-            resolve(`[OCR 识别, 置信度 ${confidence}%]\n\n${text.trim()}`)
+      // 预下载每个语言包（chi_sim+eng 拆分为两个）
+      const codes = lang.split('+')
+      const cacheDirs: string[] = []
+      for (const code of codes) {
+        try {
+          const dir = await ensureTesseractLang(code)
+          cacheDirs.push(dir)
+        } catch (e: any) {
+          return `OCR 语言包下载失败 (${code}): ${e.message}。请检查网络连接。`
+        }
+      }
+      const langPath = cacheDirs[0] // 使用第一个缓存目录
+
+      // ★ 大图自动缩小以加速 OCR（Tesseract 处理 2000px 以上图片极慢）★
+      let ocrPath = filePath
+      const rawBuffer = fs.readFileSync(filePath)
+      const MAX_OCR_DIM = 2048
+      // Check image dimensions to avoid sending huge images to OCR
+      try {
+        const img = nativeImage.createFromBuffer(rawBuffer)
+        const size = img.getSize()
+        if (size.width > 0 && size.height > 0 && (rawBuffer.length > 2 * 1024 * 1024 || size.width > MAX_OCR_DIM || size.height > MAX_OCR_DIM)) {
+          if (size.width > MAX_OCR_DIM || size.height > MAX_OCR_DIM) {
+            const ratio = Math.min(MAX_OCR_DIM / size.width, MAX_OCR_DIM / size.height)
+            const resized = img.resize({ 
+              width: Math.round(size.width * ratio), 
+              height: Math.round(size.height * ratio),
+              quality: 'good' 
+            })
+            const tmpDir = path.join(app.getPath('userData'), 'corebuddy-data', 'temp-ocr')
+            fs.mkdirSync(tmpDir, { recursive: true })
+            ocrPath = path.join(tmpDir, `ocr-${Date.now()}.png`)
+            fs.writeFileSync(ocrPath, resized.toPNG())
           }
-        }).catch((err: any) => {
-          resolve(`OCR 识别失败: ${err.message}\n\n请确保图片可正常打开。首次使用需下载中文语言包(~12MB)。`)
+        }
+      } catch { /* resize failed, use original */ }
+
+      // 使用 child_process.fork 运行 OCR，彻底绕过 worker_threads/asar 问题
+      try {
+        // 开发模式: electron/ocr-worker.js | 打包后: asar.unpacked/dist-electron/ocr-worker.js
+        const ocrBase = app.isPackaged
+          ? __dirname.replace(/app\.asar/, 'app.asar.unpacked')
+          : __dirname
+        const ocrWorkerPath = path.join(ocrBase, 'ocr-worker.js')
+        if (!fs.existsSync(ocrWorkerPath)) {
+          return `OCR 引擎未找到: ${ocrWorkerPath}。请重新安装 CoreBuddy。`
+        }
+        
+        const result = await new Promise<{ text: string; confidence: number }>((resolve, reject) => {
+          // fork 子进程是纯 Node.js 环境，无法自动重定向 asar → asar.unpacked
+          // 打包后需传入 NODE_PATH 指向 unpacked node_modules，否则子进程找不到 tesseract.js
+          const forkOpts: { silent: boolean; env?: NodeJS.ProcessEnv } = { silent: true }
+          if (app.isPackaged) {
+            // __dirname: resources\app.asar\dist-electron → node_modules: resources\app.asar.unpacked\node_modules
+            const unpackedNodeModules = path.join(process.resourcesPath!, 'app.asar.unpacked', 'node_modules')
+            forkOpts.env = { ...process.env, NODE_PATH: unpackedNodeModules }
+          }
+          const child = fork(ocrWorkerPath, [], forkOpts)
+          const timeout = setTimeout(() => {
+            child.kill()
+            reject(new Error('OCR 超时（60 秒）。图片可能过大，请尝试缩小后再试。'))
+          }, 60000)
+          
+          child.on('message', (msg: any) => {
+            clearTimeout(timeout)
+            if (msg.success) {
+              resolve({ text: msg.text || '', confidence: msg.confidence || 0 })
+            } else {
+              reject(new Error(msg.error || 'OCR 未知错误'))
+            }
+          })
+          
+          child.on('error', (err) => {
+            clearTimeout(timeout)
+            reject(new Error(`OCR 进程启动失败: ${err.message}`))
+          })
+
+          child.on('exit', (code, signal) => {
+            if (code !== 0) {
+              clearTimeout(timeout)
+              reject(new Error(`OCR 进程异常退出 (code=${code}, signal=${signal})`))
+            }
+          })
+          
+          child.send({ imagePath: ocrPath, language: lang, langPath })
         })
-      })
+        
+        if (!result.text.trim()) return '图片中未识别到文字。请确认: 1) 图片包含清晰的文字 2) 文字为中文或英文'
+        // Cleanup temp OCR file
+        if (ocrPath !== filePath) {
+          try { fs.unlinkSync(ocrPath) } catch {}
+        }
+        // Cleanup old OCR temp files (older than 1 hour)
+        try {
+          const tmpDir = path.join(app.getPath('userData'), 'corebuddy-data', 'temp-ocr')
+          if (fs.existsSync(tmpDir)) {
+            const now = Date.now()
+            fs.readdirSync(tmpDir).forEach(f => {
+              const fp = path.join(tmpDir, f)
+              try {
+                if (now - fs.statSync(fp).mtimeMs > 3600_000) fs.unlinkSync(fp)
+              } catch {}
+            })
+          }
+        } catch {}
+        return `[OCR 识别, 置信度 ${result.confidence}%]\n\n${result.text.trim()}`
+      } catch (err: any) {
+        return `OCR 识别失败: ${err.message}\n\n请确保图片可正常打开。`
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
       return `图片识别失败: ${msg}`
@@ -1905,7 +2126,8 @@ registerTool({
     try {
       const srcPath = params.path
       if (!srcPath || !fs.existsSync(srcPath)) return `图片不存在: ${srcPath}`
-      const output = params.output || srcPath.replace(/(\.\w+)$/, '_edited$1')
+      const rawOutput = params.output || srcPath.replace(/(\.\w+)$/, '_edited$1')
+      const output = path.isAbsolute(rawOutput) ? rawOutput : resolveWorkPath(rawOutput)
       const instruction = (params.instruction || '').trim().toLowerCase()
 
       const ext = path.extname(srcPath).toLowerCase()
@@ -2145,11 +2367,15 @@ registerTool({
   parallelSafe: true,
   domains: ['office', 'code', 'creative'],
   execute(params) {
-    const cmd = slashCommands.get(params.command)
-    if (!cmd) {
-      return `未知命令: /${params.command}\n可用: ${[...slashCommands.keys()].map(k => '/' + k).join(', ')}`
+    try {
+      const cmd = slashCommands.get(params?.command)
+      if (!cmd) {
+        return `未知命令: /${params?.command || ''}\n可用: ${[...slashCommands.keys()].map(k => '/' + k).join(', ')}`
+      }
+      return params?.content ? `${cmd.prompt}\n\n${params.content}` : cmd.prompt
+    } catch (e: unknown) {
+      return `斜杠命令执行失败: ${e instanceof Error ? e.message : String(e)}`
     }
-    return params.content ? `${cmd.prompt}\n\n${params.content}` : cmd.prompt
   },
 })
 
@@ -2203,9 +2429,13 @@ registerTool({
   permission: 2,
   domains: ['office', 'code', 'creative'],
   execute(params) {
-    if (!activeTeams.has(params.name)) return `团队 "${params.name}" 不存在`
-    activeTeams.delete(params.name)
-    return `团队 "${params.name}" 已删除`
+    try {
+      if (!activeTeams.has(params?.name)) return `团队 "${params?.name || ''}" 不存在`
+      activeTeams.delete(params.name)
+      return `团队 "${params.name}" 已删除`
+    } catch (e: unknown) {
+      return `删除团队失败: ${e instanceof Error ? e.message : String(e)}`
+    }
   },
 })
 
@@ -2220,32 +2450,36 @@ registerTool({
   permission: 1,
   domains: ['office', 'code', 'creative'],
   execute(params) {
-    const team = activeTeams.get(params.team)
-    if (!team) return `团队 "${params.team}" 不存在`
-    const to = team.members.find(m => m.name === params.to)
-    if (!to) return `成员 "${params.to}" 不在团队中。成员: ${team.members.map(m => m.name).join(', ')}`
+    try {
+      const team = activeTeams.get(params?.team)
+      if (!team) return `团队 "${params?.team || ''}" 不存在`
+      const to = team.members.find(m => m.name === params?.to)
+      if (!to) return `成员 "${params?.to || ''}" 不在团队中。成员: ${team.members.map(m => m.name).join(', ')}`
 
-    team.messages.push({ from: 'ai', to: params.to, content: params.content })
+      team.messages.push({ from: 'ai', to: params.to, content: params.content || '' })
 
-    // If API config available, spawn sub-agent to execute the teammate's task
-    if (currentApiConfig) {
-      const subTools = getAllTools()
-        .filter(t => t.permission <= 2 && t.name !== 'spawn_agent' && t.name !== 'send_message')
-        .map(t => ({ name: t.name, description: t.description, permission: t.permission, execute: t.execute }))
+      // If API config available, spawn sub-agent to execute the teammate's task
+      if (currentApiConfig) {
+        const subTools = getAllTools()
+          .filter(t => t.permission <= 2 && t.name !== 'spawn_agent' && t.name !== 'send_message')
+          .map(t => ({ name: t.name, description: t.description, permission: t.permission, execute: t.execute }))
 
-      spawnSubAgent({
-        apiKey: currentApiConfig.apiKey, model: currentApiConfig.model,
-        apiUrl: currentApiConfig.apiUrl,
-        task: `${to.role} (${to.name}) 收到任务: ${params.content}`,
-        tools: subTools,
-      }).then(result => {
-        team.messages.push({ from: to.name, to: 'ai', content: result.slice(0, 2000) })
-      }).catch(() => {})
+        spawnSubAgent({
+          apiKey: currentApiConfig.apiKey, model: currentApiConfig.model,
+          apiUrl: currentApiConfig.apiUrl,
+          task: `${to.role} (${to.name}) 收到任务: ${params.content || ''}`,
+          tools: subTools,
+        }).then(result => {
+          team.messages.push({ from: to.name, to: 'ai', content: result.slice(0, 2000) })
+        }).catch(() => {})
 
-      return `已向 ${to.role} (${to.name}) 分派任务，正在异步执行...\n\n任务: ${params.content}`
+        return `已向 ${to.role} (${to.name}) 分派任务，正在异步执行...\n\n任务: ${params.content || ''}`
+      }
+
+      return `[${to.role} - ${to.name}]\n任务: ${params.content || ''}\n\n(需配置 API Key 以启用自动执行)`
+    } catch (e: unknown) {
+      return `发送消息失败: ${e instanceof Error ? e.message : String(e)}`
     }
-
-    return `[${to.role} - ${to.name}]\n任务: ${params.content}\n\n(需配置 API Key 以启用自动执行)`
   },
 })
 
@@ -2260,8 +2494,9 @@ registerTool({
   parallelSafe: true,
   domains: ['office', 'code', 'creative'],
   execute(params) {
-    const schema = typeof params.schema === 'string' ? params.schema : JSON.stringify(params.schema)
-    return `请严格按照以下 JSON Schema 输出，只返回 JSON 对象，不要加 markdown 包装:
+    try {
+      const schema = typeof params?.schema === 'string' ? params.schema : JSON.stringify(params?.schema || {})
+      return `请严格按照以下 JSON Schema 输出，只返回 JSON 对象，不要加 markdown 包装:
 
 Schema:
 ${schema}
@@ -2270,5 +2505,8 @@ ${schema}
 - 只输出 JSON，不要用 \`\`\`json 包裹
 - 不要输出解释性文字
 - 所有 required 字段必须存在`
+    } catch (e: unknown) {
+      return `结构化输出配置失败: ${e instanceof Error ? e.message : String(e)}`
+    }
   },
 })

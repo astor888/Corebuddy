@@ -12,6 +12,7 @@ import { getMarketplaceSkills, searchMarketplace, installSkill, uninstallSkill }
 import { connectAllMcpServers, getMcpServers, connectOneMcpServer, disconnectMcpServer, updateMcpServer, removeMcpServer, getAllServerStatus, getServerTools } from './mcp-client'
 import { startOAuthServer, startOAuthFlow, stopOAuthServer, getOAuthPort } from './oauth'
 import { getAllConnectors, getConnector, setConnectorStatus, getAllConnectorStatuses } from './connectors'
+import { getAllExperts, getActiveExpert, setActiveExpert, ExpertInfo } from './experts'
 
 let mcpConnected = false
 
@@ -76,22 +77,40 @@ ipcMain.handle('chat:sendMessage', async (_e, text: string, modelId: string, con
   // Create abort controller for this stream (check for existing first)
   const existing = activeStreams.get(convId)
   if (existing) existing.abort() // Cancel any previous stream for this conversation
-  let aborted = false
-  activeStreams.set(convId, { abort: () => { aborted = true } })
+  const abortController = new AbortController()
+  activeStreams.set(convId, { abort: () => abortController.abort() })
   broadcastToAll('conv:status', { convId, loading: true })
 
   try {
     const apiUrl = modelEntry?.apiUrl || 'https://api.deepseek.com/v1'
-    // Use model's own API key if set, otherwise fall back to global key
+
+    // ★ 模型专属 Key 缺失时弹窗引导，不静默降级到全局 Key
     const effectiveApiKey = modelEntry?.apiKey || apiKey
+    if (!modelEntry?.apiKey && modelEntry && apiUrl !== 'https://api.deepseek.com/v1' && mainWindow) {
+      const btnIdx = dialog.showMessageBoxSync(mainWindow, {
+        type: 'warning',
+        title: '需要专属 API Key',
+        message: `模型 "${modelEntry.name}" 未配置专属 API Key`,
+        detail: `该模型的 API 地址是 ${apiUrl}，全局 Key 可能不兼容。\n请前往设置页面为该模型单独配置 Key。`,
+        buttons: ['取消', '去设置'],
+        defaultId: 1,
+        cancelId: 0,
+      })
+      if (btnIdx === 1) {
+        broadcastToAll('ui:openSettings', { tab: 'models', focusModel: resolvedModelId })
+      }
+      broadcastToAll('chat:streamError', { message: `请先为模型 "${modelEntry.name}" 配置 API Key`, convId })
+      activeStreams.delete(convId)
+      return
+    }
 
     await agentLoop(text, convId, {
       apiKey: effectiveApiKey,
       model: resolvedModelId,
       persona: (persona as any) || 'office',
       executionMode: (executionMode as any) || 'craft',
-      permLevel: permLevel || 3,
-      permissionMode: 'default',
+      permLevel: permLevel || 5,
+      permissionMode: 'bypassPermissions',
       thinkingEffort: 'medium',
       scenePrompt: scenePrompt || undefined,
       userName: userName || undefined,
@@ -110,7 +129,8 @@ ipcMain.handle('chat:sendMessage', async (_e, text: string, modelId: string, con
         })
         return result.response === 0
       },
-      isAborted: () => aborted,
+      isAborted: () => abortController.signal.aborted,
+      abortSignal: abortController.signal,
       sender: mainWindow!,
     }, mainWindow)
 
@@ -348,6 +368,9 @@ function loadModelsConfig(): { models: Array<{ id: string; name: string; apiUrl:
     models: [
       { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', apiUrl: 'https://api.deepseek.com/v1' },
       { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', apiUrl: 'https://api.deepseek.com/v1' },
+      { id: 'agnes-2.0-flash', name: 'Agnes 2.0 Flash（日常聊天）', apiUrl: 'https://apihub.agnes-ai.com/v1' },
+      { id: 'agnes-image-2.1-flash', name: 'Agnes Image 2.1 Flash（图片识别）', apiUrl: 'https://apihub.agnes-ai.com/v1' },
+      { id: 'agnes-video-v2.0', name: 'Agnes Video V2.0（视频生成）', apiUrl: 'https://apihub.agnes-ai.com/v1' },
     ],
     defaultModel: 'deepseek-v4-pro',
   }
@@ -461,6 +484,28 @@ ipcMain.handle('skills:uninstall', async (_e, id: string) => {
   return uninstallSkill(id)
 })
 
+// Experts
+ipcMain.handle('experts:list', () => {
+  return getAllExperts()
+})
+
+ipcMain.handle('experts:active', () => {
+  return getActiveExpert()
+})
+
+ipcMain.handle('experts:activate', async (_e, expertId: string) => {
+  const experts = getAllExperts()
+  const expert = experts.find(e => e.id === expertId)
+  if (!expert) throw new Error(`专家 "${expertId}" 不存在`)
+  setActiveExpert(expert)
+  return expert
+})
+
+ipcMain.handle('experts:deactivate', () => {
+  setActiveExpert(null)
+  return true
+})
+
 // Open external URL
 ipcMain.handle('openExternal', async (_e, url: string) => {
   await shell.openExternal(url)
@@ -565,6 +610,249 @@ ipcMain.handle('file:saveTemp', async (_e, data: string, fileName: string) => {
     return { success: true, path: filePath, size: buffer.length }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
+    return { success: false, error: msg }
+  }
+})
+
+// ── Video Generation Storyboard ──
+ipcMain.handle('storyboard:generate', async (_e, prompt: string) => {
+  const apiKey = configGet('apiKey')
+  const modelsCfg = loadModelsConfig()
+  const modelEntry = modelsCfg.models.find((m: any) => m.id === modelsCfg.defaultModel)
+  const apiUrl = modelEntry?.apiUrl || 'https://api.deepseek.com/v1'
+  const effectiveApiKey = modelEntry?.apiKey || apiKey
+
+  if (!effectiveApiKey) return { success: false, error: '请先配置 API Key' }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 90000) // 90s timeout
+
+  try {
+    const resp = await fetch(`${apiUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${effectiveApiKey}`,
+      },
+      body: JSON.stringify({
+        model: modelsCfg.defaultModel || 'deepseek-v4-pro',
+        messages: [
+          { role: 'system', content: '你是一个专业的视频制作导演。你只返回有效的JSON，不添加任何解释文字。' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.7,
+        max_tokens: 4000,
+      }),
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+
+    if (!resp.ok) {
+      const errText = await resp.text()
+      return { success: false, error: `API 错误: ${resp.status} - ${errText.slice(0, 200)}` }
+    }
+
+    const json = await resp.json() as any
+    const content = json?.choices?.[0]?.message?.content || ''
+
+    // Return raw text alongside parsed JSON (for summary generation)
+    const rawText = content
+
+    // Try to parse JSON — try whole content first, then extract JSON blocks
+    let data: any = null
+    try { data = JSON.parse(content) } catch {}
+    
+    if (!data) {
+      // Try matching ```json ... ``` code blocks
+      const blobMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/)
+      if (blobMatch) {
+        try { data = JSON.parse(blobMatch[1]) } catch {}
+      }
+    }
+    
+    if (!data) {
+      // Try finding JSON objects from the end (LLM sometimes adds preamble)
+      const jsonMatches = content.match(/\{[\s\S]*\}/g) // greedy, matches full nested JSON
+      if (jsonMatches) {
+        for (let i = jsonMatches.length - 1; i >= 0; i--) {
+          try {
+            data = JSON.parse(jsonMatches[i])
+            break
+          } catch { /* try previous match */ }
+        }
+      }
+    }
+    
+    if (data) {
+      return { success: true, data, raw: rawText }
+    }
+    
+    return { success: true, error: '无法从 AI 响应中提取 JSON', raw: rawText }
+  } catch (e: unknown) {
+    clearTimeout(timer)
+    const msg = e instanceof Error ? (e.name === 'AbortError' ? '请求超时（90秒），请重试' : e.message) : String(e)
+    return { success: false, error: msg }
+  }
+})
+
+// ── Video Generation ──
+ipcMain.handle('video-gen:generate', async (_e, prompt: string) => {
+  const apiKey = configGet('apiKey')
+  const modelsCfg = loadModelsConfig()
+  const videoModel = modelsCfg.models.find((m: any) => m.id === 'agnes-video-v2.0')
+  const apiUrl = videoModel?.apiUrl || 'https://apihub.agnes-ai.com/v1'
+  const effectiveApiKey = videoModel?.apiKey || apiKey
+
+  if (!effectiveApiKey) return { success: false, error: '请先配置视频模型 API Key' }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 120000) // 2min timeout for video generation
+
+  try {
+    // Try chat/completions endpoint first (OpenAI-compatible video model)
+    const resp = await fetch(`${apiUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${effectiveApiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'agnes-video-v2.0',
+        messages: [
+          { role: 'user', content: `Generate a video: ${prompt}` },
+        ],
+      }),
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+
+    if (!resp.ok) {
+      const errText = await resp.text()
+      return { success: false, error: `视频生成 API 错误: ${resp.status} - ${errText.slice(0, 300)}` }
+    }
+
+    const json = await resp.json() as any
+    // Handle both sync response and async task response
+    const videoUrl = json?.choices?.[0]?.message?.content
+      || json?.data?.[0]?.url
+      || json?.video_url || json?.url
+      || json?.output?.video_url
+      || ''
+
+    // Handle async task (polling pattern)
+    if (!videoUrl && (json?.task_id || json?.id)) {
+      const taskId = json.task_id || json.id
+      // Poll for result (up to 10 times, 5s intervals)
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise(r => setTimeout(r, 5000))
+        try {
+          const pollResp = await fetch(`${apiUrl}/tasks/${taskId}`, {
+            headers: { 'Authorization': `Bearer ${effectiveApiKey}` },
+            signal: AbortSignal.timeout(10000),
+          })
+          if (pollResp.ok) {
+            const pollJson = await pollResp.json() as any
+            if (pollJson?.status === 'completed') {
+              const resultUrl = pollJson?.video_url || pollJson?.url || pollJson?.output?.video_url || ''
+              if (resultUrl) return { success: true, videoUrl: resultUrl }
+            }
+            if (pollJson?.status === 'failed') {
+              return { success: false, error: pollJson?.error || '视频生成任务失败' }
+            }
+          }
+        } catch {
+          // Poll request failed — continue polling
+          continue
+        }
+      }
+      return { success: false, error: '视频生成超时，任务未在50秒内完成' }
+    }
+
+    return { success: !!videoUrl, videoUrl, error: videoUrl ? '' : '未获取到视频地址' }
+  } catch (e: unknown) {
+    clearTimeout(timer)
+    const msg = e instanceof Error ? (e.name === 'AbortError' ? '视频生成超时（2分钟），请重试' : e.message) : String(e)
+    return { success: false, error: msg }
+  }
+})
+
+// ── Video Synthesis ──
+ipcMain.handle('video-gen:synthesize', async (_e, shots: Array<{ name: string; videoUrl: string }>) => {
+  if (!Array.isArray(shots) || shots.length === 0) {
+    return { success: false, error: '没有可合成的视频分镜' }
+  }
+
+  const apiKey = configGet('apiKey')
+  const modelsCfg = loadModelsConfig()
+  const videoModel = modelsCfg.models.find((m: any) => m.id === 'agnes-video-v2.0')
+  const apiUrl = videoModel?.apiUrl || 'https://apihub.agnes-ai.com/v1'
+  const effectiveApiKey = videoModel?.apiKey || apiKey
+
+  if (!effectiveApiKey) return { success: false, error: '请先配置视频模型 API Key' }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 180000) // 3min timeout for synthesis
+
+  try {
+    const videoList = shots.map((s, i) => `[镜头${i + 1}] ${s.name}: ${s.videoUrl}`).join('\n')
+    const resp = await fetch(`${apiUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${effectiveApiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'agnes-video-v2.0',
+        messages: [
+          { role: 'user', content: `Concatenate and blend the following video clips into a single seamless video. Between each clip, add a 5-second smooth crossfade transition (fade out / fade in). Maintain consistent color grading and audio levels throughout. Output the final video URL only:\n${videoList}\n\nIMPORTANT: Each transition between clips MUST be a 5-second crossfade. No hard cuts.` },
+        ],
+      }),
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+
+    if (!resp.ok) {
+      const errText = await resp.text()
+      return { success: false, error: `合成 API 错误: ${resp.status} - ${errText.slice(0, 300)}` }
+    }
+
+    const json = await resp.json() as any
+    const finalVideoUrl = json?.choices?.[0]?.message?.content
+      || json?.data?.[0]?.url
+      || json?.video_url || json?.url
+      || json?.output?.video_url
+      || ''
+
+    if (!finalVideoUrl && (json?.task_id || json?.id)) {
+      const taskId = json.task_id || json.id
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise(r => setTimeout(r, 5000))
+        try {
+          const pollResp = await fetch(`${apiUrl}/tasks/${taskId}`, {
+            headers: { 'Authorization': `Bearer ${effectiveApiKey}` },
+            signal: AbortSignal.timeout(10000),
+          })
+          if (pollResp.ok) {
+            const pollJson = await pollResp.json() as any
+            if (pollJson?.status === 'completed') {
+              const resultUrl = pollJson?.video_url || pollJson?.url || pollJson?.output?.video_url || ''
+              if (resultUrl) return { success: true, finalVideoUrl: resultUrl }
+            }
+            if (pollJson?.status === 'failed') {
+              return { success: false, error: pollJson?.error || '合成任务失败' }
+            }
+          }
+        } catch {
+          continue
+        }
+      }
+      return { success: false, error: '视频合成超时，任务未在50秒内完成' }
+    }
+
+    return { success: !!finalVideoUrl, finalVideoUrl, error: finalVideoUrl ? '' : '未获取到合成视频地址' }
+  } catch (e: unknown) {
+    clearTimeout(timer)
+    const msg = e instanceof Error ? (e.name === 'AbortError' ? '视频合成超时（3分钟），请重试' : e.message) : String(e)
     return { success: false, error: msg }
   }
 })

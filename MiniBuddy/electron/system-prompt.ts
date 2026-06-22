@@ -8,6 +8,7 @@ import os from 'os'
 import { getToolsPrompt } from './tool-registry'
 import { getProfileText } from './memory'
 import { getSkillsPrompt, getActiveSkillsPrompt } from './plugins'
+import { getActiveExpert } from './experts'
 
 function loadClaudeMd(): string {
   const paths = [
@@ -42,6 +43,9 @@ function getPersonaPrompt(persona: PersonaMode): string {
 - 提供多种方案供选择，附带设计理由。
 - 使用生动的语言描述视觉效果和用户体验。
 - 技术实现时会额外关注前端呈现和动画细节。`
+    default:
+      return `**侧重点 — 通用助手**
+- 灵活应对各类任务，根据具体场景调整工作方式。`
   }
 }
 
@@ -56,6 +60,12 @@ export function buildSystemPrompt(
   const claudeMd = loadClaudeMd()
 
   const name = userName || '用户'
+
+  // ── Active Expert ──
+  const activeExpert = getActiveExpert()
+  const expertSection = activeExpert?.agentMd
+    ? `\n## 活跃专家: ${activeExpert.displayName}\n你当前正在以「${activeExpert.displayName}」的身份工作。请严格遵循以下专家指令：\n\n${activeExpert.agentMd}\n`
+    : ''
 
   // ── Memory Section ──
   const profileText = getProfileText()
@@ -87,9 +97,8 @@ export function buildSystemPrompt(
 - 你会操作电脑：读/写文件、执行命令、搜索网络、生成 Word/PPT/Markdown/CSV 文档。
 - 你有持久记忆：关于 ${name} 的事实、偏好、项目和待办事项。
 - 说中文。像能干的同事一样说话——简洁、直接、高效。不是聊天机器人，不是客服。
-
+${expertSection}
 ---
-
 ## 当前工作模式: ${getModeLabel(executionMode)}
 
 ${modeDescription}
@@ -308,6 +317,7 @@ function getModeLabel(mode: ExecutionMode): string {
     case 'craft': return 'Craft — 直接执行模式'
     case 'plan': return 'Plan — 先计划后执行模式'
     case 'ask': return 'Ask — 仅问答模式'
+    default: return 'Craft — 直接执行模式'
   }
 }
 
@@ -330,5 +340,10 @@ function getModeDescription(mode: ExecutionMode): string {
 - 仅使用已有知识回答
 - 不读文件、不执行命令、不搜索网络
 - 适合纯概念性问题、快速咨询`
+    default:
+      return `**Craft 模式（默认）**：收到指令后立刻行动。
+- 你说，我做
+- 不确认、不反问、不提前解释
+- 适合明确的编程、文档、搜索、分析、安装任务`
   }
 }

@@ -1176,6 +1176,17 @@ export function uninstallSkill(id: string): boolean {
   const skillDir = path.join(pluginDir, id)
 
   try {
+    // Validate skill ID to prevent path traversal
+    if (!/^[a-zA-Z0-9_-]+$/.test(id) || id.length > 64) {
+      return false
+    }
+    const skillDir = path.join(pluginDir, id)
+    // Extra safety: verify resolved path is within pluginDir
+    if (!path.resolve(skillDir).startsWith(path.resolve(pluginDir) + path.sep)) {
+      console.error(`[skill-marketplace] Path traversal blocked for skill: ${id}`)
+      return false
+    }
+
     if (!fs.existsSync(skillDir)) return false
 
     // Remove directory recursively

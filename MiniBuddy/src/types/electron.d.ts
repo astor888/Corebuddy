@@ -62,6 +62,21 @@ export interface StreamDoneData {
   artifactCount: number
 }
 
+export interface ExpertInfo {
+  id: string
+  name: string
+  displayName: string
+  description: string
+  category: string
+  icon: string
+  tags: string[]
+  quickPrompts: string[]
+  agentMd: string
+  version: string
+  author: string
+  builtin: boolean
+}
+
 export interface ElectronAPI {
   window: {
     minimize: () => Promise<void>
@@ -135,6 +150,12 @@ export interface ElectronAPI {
     install: (id: string) => Promise<{ success: boolean; error?: string; path?: string }>
     uninstall: (id: string) => Promise<boolean>
   }
+  experts: {
+    list: () => Promise<ExpertInfo[]>
+    active: () => Promise<ExpertInfo | null>
+    activate: (id: string) => Promise<ExpertInfo>
+    deactivate: () => Promise<boolean>
+  }
   connectors: {
     list: () => Promise<ConnectorConfig[]>
     connect: (id: string, config: Record<string, string>) => Promise<{ success: boolean; error?: string }>
@@ -153,6 +174,16 @@ export interface ElectronAPI {
     getInfo: (filePath: string) => Promise<{ success: boolean; name?: string; path?: string; size?: number; created?: string; modified?: string; ext?: string; isDir?: boolean; error?: string }>
   }
   openExternal: (url: string) => Promise<boolean>
+  ui: {
+    onOpenSettings: (callback: (data: { tab: string; focusModel: string }) => void) => () => void
+  }
+  storyboard: {
+    generate: (prompt: string) => Promise<{ success: boolean; data?: any; error?: string; raw?: string }>
+  }
+  videoGen: {
+    generate: (prompt: string) => Promise<{ success: boolean; videoUrl?: string; error?: string }>
+    synthesize: (shots: Array<{ name: string; videoUrl: string }>) => Promise<{ success: boolean; finalVideoUrl?: string; error?: string }>
+  }
 }
 
 export interface FileInfo {

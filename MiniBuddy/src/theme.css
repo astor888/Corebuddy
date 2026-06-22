@@ -1,0 +1,87 @@
+/* ===== Dark Theme Overrides =====
+ * Applied via `.theme-dark` class on <html> element.
+ * Overrides hardcoded Tailwind arbitrary colors without modifying JSX.
+ */
+
+/* Base */
+.theme-dark, .theme-dark body {
+  background: #1D2129;
+}
+
+/* ---- Background ---- */
+.theme-dark .bg-white { background: #2A2D35 !important; }
+.theme-dark .bg-\[\#F7F8FA\] { background: #333640 !important; }
+.theme-dark .bg-\[\#F2F3F5\] { background: #3A3D45 !important; }
+.theme-dark .bg-\[\#FAFAFA\] { background: #2A2D35 !important; }
+.theme-dark .bg-\[\#FFF1F0\] { background: #3A2020 !important; }
+.theme-dark .bg-\[\#FFF7E6\] { background: #3A3020 !important; }
+.theme-dark .bg-\[\#E8F3FF\] { background: #1D3B6B !important; }
+.theme-dark .bg-\[\#165DFF\]\/10 { background: rgba(64,128,255,0.15) !important; }
+
+/* ---- Text ---- */
+.theme-dark .text-\[\#1D2129\] { color: #E5E6EB !important; }
+.theme-dark .text-\[\#4E5969\] { color: #C9CDD4 !important; }
+.theme-dark .text-\[\#86909C\] { color: #9DA0A8 !important; }
+.theme-dark .text-\[\#C9CDD4\] { color: #5A5D65 !important; }
+.theme-dark .text-\[\#165DFF\] { color: #4080FF !important; }
+.theme-dark .text-\[\#1D2129\]\.truncate { color: #E5E6EB !important; }
+
+/* ---- Border ---- */
+.theme-dark .border-\[\#E5E6EB\] { border-color: #3A3D45 !important; }
+.theme-dark .border-\[\#F2F3F5\] { border-color: #333640 !important; }
+.theme-dark .border-\[\#C9CDD4\] { border-color: #4A4D55 !important; }
+.theme-dark .border-\[\#165DFF\] { border-color: #4080FF !important; }
+.theme-dark .border-\[\#E5E6EB\]\/50 { border-color: rgba(58, 61, 69, 0.5) !important; }
+.theme-dark .border-\[\#E5E6EB\]\/30 { border-color: rgba(58, 61, 69, 0.3) !important; }
+
+/* ---- Hover states ---- */
+.theme-dark .hover\:bg-\[\#F7F8FA\]:hover { background: #333640 !important; }
+.theme-dark .hover\:bg-\[\#F2F3F5\]:hover { background: #3A3D45 !important; }
+.theme-dark .hover\:bg-\[\#FAFAFA\]:hover { background: #333640 !important; }
+.theme-dark .hover\:bg-\[\#E8F3FF\]:hover { background: #1A3050 !important; }
+.theme-dark .hover\:text-\[\#165DFF\]:hover { color: #5C9BFF !important; }
+.theme-dark .hover\:text-\[\#4E5969\]:hover { color: #E5E6EB !important; }
+.theme-dark .hover\:border-\[\#C9CDD4\]:hover { border-color: #5A5D65 !important; }
+.theme-dark .hover\:border-\[\#F2F3F5\]:hover { border-color: #3A3D45 !important; }
+.theme-dark .hover\:shadow-sm:hover { box-shadow: 0 1px 3px rgba(0,0,0,0.3) !important; }
+
+/* ---- Divider ---- */
+.theme-dark .divide-y.divide-\[\#F2F3F5\] > * + * { border-color: #333640 !important; }
+.theme-dark hr, .theme-dark .h-px { background: #333640 !important; }
+
+/* ---- Input ---- */
+.theme-dark input, .theme-dark textarea, .theme-dark select {
+  background: #2A2D35 !important;
+  color: #E5E6EB !important;
+  border-color: #3A3D45 !important;
+}
+.theme-dark input::placeholder, .theme-dark textarea::placeholder {
+  color: #5A5D65 !important;
+}
+.theme-dark input:focus, .theme-dark textarea:focus {
+  border-color: #4080FF !important;
+}
+
+/* ---- Modal overlay ---- */
+.theme-dark [style*="background: rgba(29,33,41,0.3)"] {
+  background: rgba(0,0,0,0.6) !important;
+}
+
+/* ---- Scrollbar ---- */
+.theme-dark ::-webkit-scrollbar-track { background: #1D2129 !important; }
+.theme-dark ::-webkit-scrollbar-thumb { background: #3A3D45 !important; }
+
+/* ---- Pre/Code blocks ---- */
+.theme-dark pre, .theme-dark code {
+  background: #1A1C22 !important;
+  color: #C9CDD4 !important;
+  border-color: #3A3D45 !important;
+}
+
+/* ---- SVG icons ---- */
+.theme-dark svg text, .theme-dark svg tspan { fill: #C9CDD4 !important; }
+
+/* ---- Gradient accent bar ---- */
+.theme-dark [class*="from-\\[#165DFF\\]"] {
+  --tw-gradient-from: #4080FF !important;
+}

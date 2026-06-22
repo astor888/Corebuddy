@@ -11,8 +11,10 @@ export function PreviewPanel({ msgs, artifacts }: { msgs: Array<{ id: string; ro
   // Find previewable content: 1) HTML in messages 2) Latest HTML/MD artifact
   useEffect(() => {
     // Check messages for HTML
-    const lastAssistant = [...msgs].reverse().find(m => m.role === 'assistant')
-    if (lastAssistant) {
+    const msgsArr = msgs || []
+    const artsArr = artifacts || []
+    const lastAssistant = [...msgsArr].reverse().find(m => m.role === 'assistant')
+    if (lastAssistant?.content) {
       // Check for HTML in code blocks
       const htmlMatch = lastAssistant.content.match(/```(?:html)?\s*([\s\S]*?)```/)
       if (htmlMatch && /<html|<body|<div|<head|<!DOCTYPE/i.test(htmlMatch[1])) {
@@ -32,16 +34,15 @@ export function PreviewPanel({ msgs, artifacts }: { msgs: Array<{ id: string; ro
     }
 
     // Check latest HTML artifact
-    const htmlArtifact = [...artifacts].reverse().find(a => a.type === 'html')
-    if (htmlArtifact) {
-      // Try to read the file
+    const htmlArtifact = [...artsArr].reverse().find(a => a.type === 'html')
+    if (htmlArtifact?.path) {
       const a = api()
       if (a?.file) {
         a.file.read(htmlArtifact.path).then(r => {
           if (r.success && r.content) {
             setPreviewContent(r.content)
             setPreviewType('html')
-            setPreviewTitle(htmlArtifact.path.split(/[/\\]/).pop() || 'Preview')
+            setPreviewTitle(htmlArtifact.path?.split(/[/\\]/).pop() || 'Preview')
           }
         }).catch(() => {})
         return
@@ -49,15 +50,15 @@ export function PreviewPanel({ msgs, artifacts }: { msgs: Array<{ id: string; ro
     }
 
     // Check latest MD artifact
-    const mdArtifact = [...artifacts].reverse().find(a => a.type === 'md')
-    if (mdArtifact) {
+    const mdArtifact = [...artsArr].reverse().find(a => a.type === 'md')
+    if (mdArtifact?.path) {
       const a = api()
       if (a?.file) {
         a.file.read(mdArtifact.path).then(r => {
           if (r.success && r.content) {
             setPreviewContent(r.content)
             setPreviewType('markdown')
-            setPreviewTitle(mdArtifact.path.split(/[/\\]/).pop() || 'Preview')
+            setPreviewTitle(mdArtifact.path?.split(/[/\\]/).pop() || 'Preview')
           }
         }).catch(() => {})
         return
